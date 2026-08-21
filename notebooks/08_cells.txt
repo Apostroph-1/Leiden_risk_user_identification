@@ -1,0 +1,565 @@
+##MD##
+# 08 多模型分层风险分类
+
+**目标**: 对 T-90d 设备级宽表（>5单设备）进行多模型集成分类，输出 4 级风险分层 + SHAP 可解释性。
+
+**模型清单**:
+- 无监督: Isolation Forest / One-Class SVM / LOF
+- 监督（伪标签）: XGBoost / LightGBM / Random Forest
+- 可解释辅助: 决策树 surrogate + SHAP
+
+**4 级分层**: 高风险 / 中风险 / 疑似风险 / 普通用户
+
+> 本 notebook 由 `08_multi_model_stratify.py` 转换而来，所有输入输出均通过 pandas 完成，编码统一 UTF-8。
+> 带 `[TUNABLE]` 注释的参数可根据业务需要调整，注释中标注了修改范围和影响。
+##CODE##
+import os, warnings, time
+warnings.filterwarnings("ignore")
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier, export_text, plot_tree
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, average_precision_score
+import shap
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
+try:
+    import lightgbm as lgb
+    HAS_LGB = True
+except Exception:
+    HAS_LGB = False
+
+# [TUNABLE] 修改范围: 数据目录/输出目录
+# 影响内容: 决定从哪里读CSV、结果写到哪
+BASE = r"d:/Qunar_work/workbuddy_data/leiden"
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+os.makedirs(OUT, exist_ok=True)
+
+# [TUNABLE] 输入文件名
+# 影响内容: 切换不同时间窗口的数据文件
+INPUT_CSV = os.path.join(DATA, "flight_feature_detail_8.19-90days.csv")
+
+# [TUNABLE] 采样行数: None=全量, 正整数=抽样测试
+# 影响内容: None=全量865K行(慢), 10000=快速测试
+SAMPLE_N = None
+
+print(f"XGBoost: {HAS_XGB}, LightGBM: {HAS_LGB}")
+##MD##
+## 1. 加载数据
+读取设备级宽表 CSV，统一 UTF-8 编码。
+##CODE##
+print("[1/9] 加载数据")
+t0 = time.time()
+df = pd.read_csv(INPUT_CSV, nrows=SAMPLE_N, encoding="utf-8")
+print(f"  原始 {len(df)} 行, 耗时 {time.time()-t0:.1f}s")
+df.head(3)
+##MD##
+## 2. 派生特征
+基于原始字段计算比率、密度等派生特征。
+##CODE##
+def derive_features(df):
+    df = df.copy()
+    tot = df["flight_total_order_cnt"].replace(0, np.nan)
+    pay_ok_amt = df["flight_pay_ok_order_amount"].replace(0, np.nan)
+    pay_ok_cnt = df["flight_pay_ok_order_cnt"].replace(0, np.nan)
+    df["refund_rate"] = df["flight_refund_order_cnt"] / tot
+    df["refund_amount_rate"] = df["flight_refund_amount"] / pay_ok_amt
+    df["comp_amount_rate"] = df["flight_comp_total_amount"] / pay_ok_amt
+    df["cancel_rate"] = df["flight_cancel_order_cnt"] / tot
+    df["gq_rate"] = df["flight_gq_order_cnt"] / tot
+    df["ticket_success_rate"] = df["flight_ticket_success_order_cnt"] / tot
+    df["voucher_order_rate"] = df["flight_voucher_order_cnt"] / tot
+    df["scalper_rate"] = df["flight_scalper_cnt"] / tot
+    df["intercept_rate"] = df["flight_intercept_cnt"] / tot
+    df["avg_order_amount"] = df["flight_pay_ok_order_amount"] / pay_ok_cnt
+    df["user_per_order"] = df["flight_distinct_user_id_cnt"] / tot
+    df["pay_tool_per_order"] = df["flight_distinct_pay_tool_cnt"] / tot
+    df["ip_per_order"] = df["flight_distinct_ip_cnt"] / tot
+    df["passenger_per_order"] = df["flight_uid_distinct_card_num_cnt"] / tot
+    df["mobile_per_order"] = df["flight_uid_distinct_passenger_mobile_cnt"] / tot
+    df["is_short_refund"] = (df["flight_min_refund_pay_interval_sec"] <= 3600).astype(int)
+    df["is_machine_refund"] = ((df["flight_cardinality_refund_pay_time_diff"] == 1) & (df["flight_refund_order_cnt"] >= 5)).astype(int)
+    df["is_night_heavy"] = (df["flight_night_order_cnt"] / tot >= 0.3).astype(int)
+    df["is_multi_account"] = (df["flight_distinct_user_id_cnt"] >= 2).astype(int)
+    df["is_multi_pay_tool"] = (df["flight_distinct_pay_tool_cnt"] >= 3).astype(int)
+    df["is_multi_passenger"] = (df["flight_uid_distinct_card_num_cnt"] >= 5).astype(int)
+    return df
+
+df = derive_features(df)
+print(f"  派生后 {len(df.columns)} 列")
+##MD##
+## 3. 特征列表 & 缺失值填充
+
+**特征列表**是模型训练使用的全部数值特征。
+##CODE##
+# [TUNABLE] 特征列表: 增删特征会影响模型输入维度
+# 影响内容: 增加特征可能提升模型表现但也增加过拟合风险；删除特征会降低信息量
+FEATURE_COLS = [
+    "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount", "flight_pay_tool_size",
+    "refund_rate", "refund_amount_rate", "comp_amount_rate", "cancel_rate", "gq_rate",
+    "ticket_success_rate", "voucher_order_rate", "scalper_rate", "intercept_rate",
+    "flight_distinct_user_id_cnt", "flight_distinct_username_cnt", "flight_distinct_mobile_cnt",
+    "flight_distinct_email_cnt", "flight_distinct_pay_tool_cnt", "flight_distinct_ip_cnt",
+    "flight_uid_distinct_card_num_cnt", "flight_uid_distinct_passenger_mobile_cnt",
+    "avg_order_amount", "user_per_order", "pay_tool_per_order", "ip_per_order",
+    "passenger_per_order", "mobile_per_order",
+    "flight_avg_discount", "flight_min_discount", "flight_bottom_price_order_cnt",
+    "flight_add_price_sum", "flight_pricedepth_sum", "flight_voucher_sum",
+    "flight_express_price_sum", "flight_service_fee_sum", "flight_exp_cut_sum",
+    "flight_pre_day_avg", "flight_flight_size_avg", "flight_combine_order_cnt",
+    "flight_distinct_dep_city_cnt", "flight_distinct_arr_city_cnt",
+    "flight_night_order_cnt", "flight_weekend_order_cnt",
+    "flight_min_refund_pay_interval_sec", "flight_max_refund_pay_interval_sec",
+    "flight_avg_refund_pay_interval_sec", "flight_cardinality_refund_pay_time_diff",
+    "is_short_refund", "is_machine_refund", "is_night_heavy",
+    "is_multi_account", "is_multi_pay_tool", "is_multi_passenger",
+    "flight_comp_total_amount",
+]
+
+
+def fill_missing(df):
+    df = df.copy()
+    for c in FEATURE_COLS:
+        if c in df.columns:
+            # [TUNABLE] 退款时间差缺失填充值
+            # 影响内容: 999999表示"无退款记录"，越大越接近正常
+            if c in ("flight_min_refund_pay_interval_sec", "flight_max_refund_pay_interval_sec",
+                     "flight_avg_refund_pay_interval_sec"):
+                df[c] = df[c].fillna(999999)
+            elif c in ("flight_avg_discount", "flight_min_discount", "flight_pre_day_avg", "flight_flight_size_avg"):
+                df[c] = df[c].fillna(df[c].median())
+            else:
+                df[c] = df[c].fillna(0)
+    return df
+
+df = fill_missing(df)
+print("  缺失值填充完成")
+##MD##
+## 4. 伪标签生成
+由于没有真实正负样本，使用强规则生成伪标签：
+- **1=高风险异常**（强规则命中）
+- **0=正常**（明显无异常）
+- **-1=未标记**（不参与监督训练）
+##CODE##
+def gen_pseudo_labels(df):
+    df = df.copy()
+    # [TUNABLE] 伪标签规则: 修改阈值会改变正/负样本数量和分布
+    # 影响内容: 规则越严格->正样本越少但更纯净; 规则越宽松->正样本越多但噪声大
+    strong = (
+        (df["refund_rate"] >= 0.5) & (df["flight_refund_order_cnt"] >= 5)
+    ) | (
+        (df["flight_comp_total_amount"] >= 500) & (df["flight_distinct_user_id_cnt"] >= 2)
+    ) | (
+        df["flight_scalper_cnt"] >= 1
+    ) | (
+        df["is_machine_refund"] == 1
+    ) | (
+        (df["flight_distinct_user_id_cnt"] >= 8) & (df["flight_total_order_cnt"] >= 20)
+    ) | (
+        df["flight_intercept_cnt"] >= 3
+    )
+    # [TUNABLE] 正常样本规则: 修改条件会改变负样本数量
+    # 影响内容: 负样本越严格->模型对"正常"的定义越保守
+    normal = (
+        (df["flight_refund_order_cnt"] == 0) &
+        (df["flight_comp_total_amount"] == 0) &
+        (df["flight_distinct_user_id_cnt"] == 1) &
+        (df["flight_scalper_cnt"] == 0) &
+        (df["flight_intercept_cnt"] == 0) &
+        (df["flight_distinct_pay_tool_cnt"] <= 2) &
+        (df["flight_uid_distinct_card_num_cnt"] <= 2)
+    )
+    df["pseudo_label"] = -1
+    df.loc[strong, "pseudo_label"] = 1
+    df.loc[normal, "pseudo_label"] = 0
+    return df
+
+df = gen_pseudo_labels(df)
+n_pos = (df["pseudo_label"] == 1).sum()
+n_neg = (df["pseudo_label"] == 0).sum()
+n_unk = (df["pseudo_label"] == -1).sum()
+print(f"  伪标签: 异常={n_pos}  正常={n_neg}  未标记={n_unk}")
+
+X_all = df[FEATURE_COLS].values
+rule_cols = ["is_short_refund","is_machine_refund","is_night_heavy",
+             "is_multi_account","is_multi_pay_tool","is_multi_passenger"]
+df["rule_hit_cnt"] = df[rule_cols].sum(axis=1)
+##MD##
+## 5. 无监督模型
+
+### 5.1 Isolation Forest
+基于随机隔离树检测异常点。
+##CODE##
+print("[2/9] Isolation Forest")
+# [TUNABLE] n_estimators: 100-500, 越多越稳但越慢
+# [TUNABLE] contamination: 0.05-0.2, 预期异常比例, 改大->更多设备被判异常
+with tqdm(total=1, desc="Isolation Forest") as pbar:
+    iforest = IsolationForest(
+        n_estimators=200,      # [TUNABLE]
+        contamination=0.1,     # [TUNABLE]
+        random_state=42, n_jobs=-1
+    )
+    iforest.fit(X_all)
+    pbar.update(1)
+
+df["iforest_label"] = iforest.predict(X_all)
+df["iforest_score"] = -iforest.score_samples(X_all)
+df["iforest_anomaly"] = (df["iforest_label"] == -1).astype(int)
+print(f"  异常 {df['iforest_anomaly'].sum()}")
+##MD##
+### 5.2 One-Class SVM
+线性采样加速 + RBF 核。
+##CODE##
+print("[3/9] One-Class SVM（采样加速）")
+# [TUNABLE] sample_n: SVM采样数, 越大越准但越慢
+# [TUNABLE] nu: 异常比例上界, 越大->更多设备被判异常
+sample_n = min(20000, len(df))
+sample_idx = np.random.RandomState(42).choice(len(df), sample_n, replace=False)
+scaler_ocsvm = StandardScaler()
+
+with tqdm(total=2, desc="One-Class SVM") as pbar:
+    Xs = scaler_ocsvm.fit_transform(X_all[sample_idx])
+    pbar.update(1)
+    try:
+        ocsvm = OneClassSVM(kernel="rbf", nu=0.1, gamma="scale")
+        ocsvm.fit(Xs)
+        df["ocsvm_score"] = ocsvm.decision_function(scaler_ocsvm.transform(X_all))
+        df["ocsvm_anomaly"] = (ocsvm.predict(scaler_ocsvm.transform(X_all)) == -1).astype(int)
+        print(f"  异常 {df['ocsvm_anomaly'].sum()}")
+    except Exception as e:
+        print(f"  OCSVM 失败: {e}")
+        df["ocsvm_score"] = 0
+        df["ocsvm_anomaly"] = 0
+    pbar.update(1)
+##MD##
+### 5.3 Local Outlier Factor
+局部异常因子，novelty=True 以支持全量打分。
+##CODE##
+print("[4/9] Local Outlier Factor")
+# [TUNABLE] n_neighbors: 局部邻域大小, 越大越平滑
+# 影响内容: 越大->检测全局异常; 越小->检测局部异常
+sample_n = min(30000, len(df))
+sample_idx = np.random.RandomState(42).choice(len(df), sample_n, replace=False)
+
+with tqdm(total=2, desc="LOF") as pbar:
+    scaler_lof = StandardScaler()
+    Xs = scaler_lof.fit_transform(X_all[sample_idx])
+    pbar.update(1)
+    try:
+        # [TUNABLE] n_neighbors: 50 (默认20偏小, 30K采样下50更稳定)
+        lof = LocalOutlierFactor(n_neighbors=50, novelty=True, n_jobs=-1)
+        lof.fit(Xs)
+        df["lof_score"] = -lof.score_samples(scaler_lof.transform(X_all))
+        df["lof_anomaly"] = (lof.predict(scaler_lof.transform(X_all)) == -1).astype(int)
+        print(f"  异常 {df['lof_anomaly'].sum()}")
+    except Exception as e:
+        print(f"  LOF 失败: {e}")
+        df["lof_score"] = 0
+        df["lof_anomaly"] = 0
+    pbar.update(1)
+##MD##
+## 6. 监督模型（基于伪标签）
+使用伪标签中有标记的样本（label != -1）训练监督模型，再对全量打分。
+##CODE##
+print("[5/9] 监督模型（基于伪标签）")
+mask = df["pseudo_label"] != -1
+df_lab = df[mask].copy()
+X_lab = df_lab[FEATURE_COLS].values
+y_lab = df_lab["pseudo_label"].values
+X_tr, X_te, y_tr, y_te = train_test_split(X_lab, y_lab, test_size=0.2, random_state=42, stratify=y_lab)
+print(f"  训练 {len(X_tr)} (正{y_tr.sum()}) / 测试 {len(X_te)} (正{y_te.sum()})")
+
+# [TUNABLE] pos_w: 正样本权重, 调大->更关注正样本召回
+pos_w = (len(y_tr) - y_tr.sum()) / max(y_tr.sum(), 1)
+##MD##
+### 6.1 XGBoost
+##CODE##
+if HAS_XGB:
+    print("  -> XGBoost")
+    # [TUNABLE] n_estimators: 迭代轮数, 越大越准但越慢
+    # [TUNABLE] max_depth: 树深度, 越大越容易过拟合
+    # [TUNABLE] learning_rate: 学习率, 越小越稳但需要更多轮
+    xgb_model = xgb.XGBClassifier(
+        n_estimators=300, max_depth=6, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8,
+        scale_pos_weight=pos_w, n_jobs=-1, random_state=42,
+        eval_metric="aucpr", verbosity=0
+    )
+    # tqdm 回调显示训练进度
+    class TqdmCallback(xgb.callback.TrainingCallback):
+        def __init__(self, n_estimators=300):
+            self.n_estimators = n_estimators
+            self.pbar = None
+        def after_iteration(self, model, epoch, evals_log):
+            if self.pbar is None:
+                self.pbar = tqdm(total=self.n_estimators, desc="  XGBoost训练")
+            self.pbar.update(1)
+            return False
+        def after_training(self, model):
+            if self.pbar:
+                self.pbar.close()
+            return model
+
+    xgb_model.fit(X_tr, y_tr, callbacks=[TqdmCallback(300)])
+    df["xgb_prob"] = xgb_model.predict_proba(X_all)[:, 1]
+    df["xgb_pred"] = (df["xgb_prob"] >= 0.5).astype(int)
+    y_pred = xgb_model.predict(X_te)
+    y_proba = xgb_model.predict_proba(X_te)[:, 1]
+    ap = average_precision_score(y_te, y_proba)
+    print(f"     XGBoost AP = {ap:.4f}")
+    print(classification_report(y_te, y_pred, target_names=["正常", "异常"], digits=3))
+    joblib.dump(xgb_model, os.path.join(OUT, "xgb.pkl"))
+else:
+    print("  XGBoost 未安装，跳过")
+##MD##
+### 6.2 LightGBM
+##CODE##
+if HAS_LGB:
+    print("  -> LightGBM")
+    # [TUNABLE] num_leaves: 叶子数, 越大越容易过拟合
+    lgb_model = lgb.LGBMClassifier(
+        n_estimators=300, num_leaves=31, learning_rate=0.05,
+        subsample=0.8, colsample_bytree=0.8,
+        scale_pos_weight=pos_w, n_jobs=-1, random_state=42, verbose=-1
+    )
+    lgb_model.fit(X_tr, y_tr, callbacks=[lgb.log_evaluation(period=50)])
+    df["lgb_prob"] = lgb_model.predict_proba(X_all)[:, 1]
+    df["lgb_pred"] = (df["lgb_prob"] >= 0.5).astype(int)
+    y_pred = lgb_model.predict(X_te)
+    y_proba = lgb_model.predict_proba(X_te)[:, 1]
+    ap = average_precision_score(y_te, y_proba)
+    print(f"     LightGBM AP = {ap:.4f}")
+    print(classification_report(y_te, y_pred, target_names=["正常", "异常"], digits=3))
+    joblib.dump(lgb_model, os.path.join(OUT, "lgb.pkl"))
+else:
+    print("  LightGBM 未安装，跳过")
+##MD##
+### 6.3 Random Forest
+##CODE##
+print("  -> RandomForest")
+# [TUNABLE] n_estimators: 树数量; max_depth: 限制深度防止过拟合
+with tqdm(total=1, desc="  RF训练") as pbar:
+    rf = RandomForestClassifier(
+        n_estimators=200, max_depth=10, n_jobs=-1,
+        random_state=42, class_weight="balanced"
+    )
+    rf.fit(X_tr, y_tr)
+    pbar.update(1)
+
+df["rf_prob"] = rf.predict_proba(X_all)[:, 1]
+df["rf_pred"] = (df["rf_prob"] >= 0.5).astype(int)
+y_pred = rf.predict(X_te)
+y_proba = rf.predict_proba(X_te)[:, 1]
+ap = average_precision_score(y_te, y_proba)
+print(f"     RF AP = {ap:.4f}")
+print(classification_report(y_te, y_pred, target_names=["正常", "异常"], digits=3))
+joblib.dump(rf, os.path.join(OUT, "rf.pkl"))
+##MD##
+## 7. 多模型投票
+将 6 个模型的异常判定结果做加权投票。
+##CODE##
+print("[6/9] 多模型投票")
+anomaly_cols = ["iforest_anomaly", "ocsvm_anomaly", "lof_anomaly"]
+pred_cols = ["xgb_pred", "lgb_pred", "rf_pred"]
+vote_cols = [c for c in anomaly_cols + pred_cols if c in df.columns]
+df["vote_anomaly_cnt"] = df[vote_cols].sum(axis=1)
+df["vote_total"] = len(vote_cols)
+df["vote_rate"] = df["vote_anomaly_cnt"] / df["vote_total"]
+print(f"  投票模型数: {len(vote_cols)}")
+print(df["vote_anomaly_cnt"].value_counts().sort_index().to_string())
+##MD##
+## 8. 4 级风险分层
+
+| 级别 | 条件 |
+|------|------|
+| 高风险 | 多数模型异常 + 强规则命中 |
+| 中风险 | 少数异常 + 弱规则 |
+| 疑似风险 | 少量异常或仅规则命中 |
+| 普通用户 | 无异常 |
+##CODE##
+print("[7/9] 4 级风险分层")
+
+# [TUNABLE] 分层阈值: 最重要的调参点, 直接决定各级别设备数量
+# 影响内容: 改大阈值->高风险设备减少; 改小->高风险设备增多
+def stratify(row):
+    vote = row["vote_anomaly_cnt"]
+    total = row["vote_total"]
+    rule_hits = row["rule_hit_cnt"]
+    if vote >= total * 0.6 and rule_hits >= 2:   # [TUNABLE] 0.6 和 2
+        return "高风险"
+    if vote >= 2 and rule_hits >= 1:              # [TUNABLE] 2 和 1
+        return "中风险"
+    if vote >= 1 or rule_hits >= 1:              # [TUNABLE] 1 和 1
+        return "疑似风险"
+    return "普通用户"
+
+df["risk_level"] = df.apply(stratify, axis=1)
+print(df["risk_level"].value_counts().to_string())
+##MD##
+## 9. 可解释性: SHAP + 决策树 surrogate
+对最佳监督模型进行 SHAP 分析，输出全局特征重要性和局部解释。
+##CODE##
+print("[8/9] 可解释性: SHAP + 决策树 surrogate")
+
+try:
+    best_model = None
+    best_name = ""
+    if HAS_XGB:
+        best_model, best_name = xgb_model, "XGBoost"
+    elif HAS_LGB:
+        best_model, best_name = lgb_model, "LightGBM"
+
+    if best_model is not None:
+        print(f"  SHAP 解释 {best_name}")
+        # [TUNABLE] SHAP采样数: 越大越准但越慢
+        sample_n = min(3000, len(df))
+        Xs = df[FEATURE_COLS].iloc[:sample_n].values
+
+        with tqdm(total=1, desc="  SHAP计算") as pbar:
+            explainer = shap.TreeExplainer(best_model)
+            sv = explainer.shap_values(Xs)
+            if isinstance(sv, list):
+                sv = sv[1]
+            pbar.update(1)
+
+        imp = pd.DataFrame({"feature": FEATURE_COLS, "shap_mean_abs": np.abs(sv).mean(axis=0)})
+        imp = imp.sort_values("shap_mean_abs", ascending=False).reset_index(drop=True)
+        imp.to_csv(os.path.join(OUT, "shap_global_importance.csv"), index=False, encoding="utf-8-sig")
+        print(f"  SHAP Top10:")
+        print(imp.head(10).to_string(index=False))
+
+        # 局部 top10
+        prob_col = "xgb_prob" if HAS_XGB else "lgb_prob"
+        top_idx = df.iloc[:sample_n].sort_values(prob_col, ascending=False).head(10).index
+        shap_df = pd.DataFrame(sv[list(top_idx)], columns=FEATURE_COLS)
+        shap_df.insert(0, "device_id", df.loc[top_idx, "device_id"].values)
+        shap_df.insert(1, "risk_level", df.loc[top_idx, "risk_level"].values)
+        shap_df.to_csv(os.path.join(OUT, "shap_top10_anomaly.csv"), index=False, encoding="utf-8-sig")
+
+        shap.summary_plot(sv, features=df[FEATURE_COLS].iloc[:sample_n],
+                          feature_names=FEATURE_COLS, show=False, max_display=15)
+        plt.title(f"SHAP Summary - {best_name}")
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUT, "shap_summary.png"), dpi=120, bbox_inches="tight")
+        plt.close()
+        print("  SHAP 输出完成")
+except Exception as e:
+    print(f"  SHAP 失败: {e}")
+##CODE##
+try:
+    print("  决策树 surrogate 解释 vote_rate")
+    # [TUNABLE] max_depth: 越深规则越细但越难理解
+    y_sur = (df["vote_anomaly_cnt"] >= df["vote_total"] * 0.5).astype(int)
+    with tqdm(total=1, desc="  决策树") as pbar:
+        dt = DecisionTreeClassifier(max_depth=4, random_state=42, min_samples_leaf=50)
+        dt.fit(X_all, y_sur)
+        pbar.update(1)
+
+    acc = dt.score(X_all, y_sur)
+    print(f"  决策树拟合准确率 {acc:.4f}")
+    rules_txt = export_text(dt, feature_names=FEATURE_COLS, max_depth=4)
+    with open(os.path.join(OUT, "tree_rules.txt"), "w", encoding="utf-8") as f:
+        f.write(f"决策树 surrogate 拟合准确率: {acc:.4f}\n\n")
+        f.write(rules_txt)
+    plt.figure(figsize=(24, 12))
+    plot_tree(dt, feature_names=FEATURE_COLS, class_names=["正常", "异常"],
+              filled=True, fontsize=8, max_depth=4)
+    plt.title("Decision Tree Surrogate for Multi-Model Vote")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT, "tree_rules.png"), dpi=120, bbox_inches="tight")
+    plt.close()
+    joblib.dump(dt, os.path.join(OUT, "tree_surrogate.pkl"))
+    print("  决策树 surrogate 输出完成")
+except Exception as e:
+    print(f"  决策树 surrogate 失败: {e}")
+##MD##
+## 10. 输出
+所有 CSV 统一使用 UTF-8-SIG 编码（Excel 可直接打开）。
+##CODE##
+print("[9/9] 输出")
+out_cols = ["device_id", "risk_level", "vote_anomaly_cnt", "vote_total",
+            "iforest_score", "iforest_anomaly", "ocsvm_score", "ocsvm_anomaly",
+            "lof_score", "lof_anomaly"]
+if HAS_XGB:
+    out_cols += ["xgb_prob", "xgb_pred"]
+if HAS_LGB:
+    out_cols += ["lgb_prob", "lgb_pred"]
+out_cols += ["rf_prob", "rf_pred", "rule_hit_cnt",
+             "flight_total_order_cnt", "flight_refund_order_cnt",
+             "flight_comp_total_amount", "flight_distinct_user_id_cnt",
+             "flight_distinct_pay_tool_cnt", "flight_scalper_cnt",
+             "flight_intercept_cnt", "refund_rate", "comp_amount_rate",
+             "is_multi_account", "is_machine_refund", "pseudo_label"]
+out_cols = [c for c in out_cols if c in df.columns]
+result = df[out_cols].copy()
+
+level_order = {"高风险": 0, "中风险": 1, "疑似风险": 2, "普通用户": 3}
+result["level_order"] = result["risk_level"].map(level_order)
+result = result.sort_values(["level_order", "vote_anomaly_cnt"], ascending=[True, False])
+result.drop(columns=["level_order"]).to_csv(
+    os.path.join(OUT, "device_risk_score.csv"), index=False, encoding="utf-8-sig"
+)
+print(f"  device_risk_score.csv ({len(result)} 行)")
+
+# 模型对比报告
+with open(os.path.join(OUT, "model_comparison.txt"), "w", encoding="utf-8") as f:
+    f.write("=" * 60 + "\n")
+    f.write("多模型对比报告\n")
+    f.write("=" * 60 + "\n\n")
+    f.write(f"总样本数: {len(df)}\n")
+    f.write(f"伪标签: 异常={n_pos}  正常={n_neg}  未标记={n_unk}\n\n")
+    f.write("各模型异常数:\n")
+    for c in ["iforest_anomaly", "ocsvm_anomaly", "lof_anomaly", "xgb_pred", "lgb_pred", "rf_pred"]:
+        if c in df.columns:
+            f.write(f"  {c}: {df[c].sum()}\n")
+    f.write(f"\n投票分布:\n{df['vote_anomaly_cnt'].value_counts().sort_index().to_string()}\n\n")
+    f.write("4 级分层结果\n")
+    f.write(df["risk_level"].value_counts().to_string() + "\n")
+
+# 模型相关性热力图
+pred_cols = [c for c in ["iforest_anomaly", "ocsvm_anomaly", "lof_anomaly", "xgb_pred", "lgb_pred", "rf_pred"] if c in df.columns]
+if len(pred_cols) > 1:
+    corr = df[pred_cols].corr()
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(corr, annot=True, fmt=".2f", cmap="YlOrRd", xticklabels=pred_cols, yticklabels=pred_cols)
+    plt.title("Model Prediction Correlation")
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUT, "model_correlation.png"), dpi=120, bbox_inches="tight")
+    plt.close()
+    corr.to_csv(os.path.join(OUT, "model_correlation.csv"), encoding="utf-8-sig")
+
+# 4 级分布图
+plt.figure(figsize=(8, 5))
+df["risk_level"].value_counts().reindex(
+    ["高风险", "中风险", "疑似风险", "普通用户"]
+).plot.bar(color=["#d62728", "#ff7f0e", "#ffbb78", "#1f77b4"])
+plt.title("Risk Level Distribution")
+plt.ylabel("Device Count")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.savefig(os.path.join(OUT, "risk_level_distribution.png"), dpi=120, bbox_inches="tight")
+plt.close()
+
+print(f"\n[完成] 输出目录: {OUT}")
+print(f"  - device_risk_score.csv      风险分层结果")
+print(f"  - model_comparison.txt       模型对比报告")
+print(f"  - shap_global_importance.csv SHAP 全局重要性")
+print(f"  - shap_summary.png           SHAP summary 图")
+print(f"  - tree_rules.txt/png         决策树规则")
+print(f"  - model_correlation.png      模型相关性热力图")
+print(f"  - risk_level_distribution.png 4 级分布图")

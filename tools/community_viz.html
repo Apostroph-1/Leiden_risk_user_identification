@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>团伙社区图谱 - 路径追踪查询</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f7fa;color:#333}
+.container{max-width:1200px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin-bottom:12px;color:#1a1a2e}
+.stats-bar{display:flex;gap:16px;margin-bottom:12px;padding:10px 16px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08);font-size:13px}
+.stats-bar .stat-value{font-weight:700;color:#4E79A7}
+.tabs{display:flex;gap:2px;margin-bottom:0;border-bottom:2px solid #4E79A7}
+.tab{padding:8px 20px;cursor:pointer;border:1px solid #ddd;border-bottom:none;border-radius:6px 6px 0 0;background:#f8f9fa;font-size:13px;color:#666;transition:all .2s}
+.tab:hover{background:#e8f0fe}
+.tab.active{background:#fff;color:#4E79A7;border-color:#4E79A7;font-weight:600}
+.panel{display:none;background:#fff;border:1px solid #ddd;border-top:none;border-radius:0 0 8px 8px;padding:20px;min-height:500px}
+.panel.active{display:block}
+.input-group{margin-bottom:12px}
+.input-group label{display:block;font-size:13px;font-weight:600;margin-bottom:4px;color:#555}
+.input-group input,.input-group select{width:100%;padding:8px 12px;border:1px solid #ddd;border-radius:6px;font-size:14px}
+.btn{padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s;background:#4E79A7;color:#fff}
+.btn:hover{background:#3d6488}
+.btn:disabled{background:#ccc;cursor:not-allowed}
+.result-box{margin-top:12px;padding:12px;background:#f8f9fa;border-radius:8px;border:1px solid #e0e0e0;min-height:60px;font-size:13px;line-height:1.6}
+.error{color:#E15759}.success{color:#59A14F}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:#fff}
+.tag-device{background:#4E79A7}.tag-user{background:#F28E2B}.tag-pay{background:#59A14F}.tag-card{background:#E15759}.tag-mobile{background:#B07AA1}
+.tag-unknown{background:#BAB0AC}
+.loading{color:#888;font-style:italic}
+.row{display:flex;gap:12px}.row>.input-group{flex:1}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{padding:8px;text-align:left;border-bottom:2px solid #4E79A7;color:#4E79A7;cursor:pointer;white-space:nowrap}
+th:hover{background:#e8f0fe}
+td{padding:6px 8px;border-bottom:1px solid #eee}
+tr:hover{background:#f8f9fa}
+.pagination{margin-top:12px;display:flex;gap:8px;align-items:center;justify-content:center}
+.path-step{margin:4px 0;padding:8px 12px;background:#fff;border-left:3px solid #4E79A7;border-radius:0 4px 4px 0}
+.path-step .node-label{font-size:11px;color:#888}
+.path-step .node-value{font-weight:600;font-size:14px}
+.path-step .relation{font-size:12px;color:#4E79A7;margin:2px 0}
+svg.graph{display:block;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:grab}
+#panel-graph{overflow:auto}
+svg.graph:active{cursor:grabbing}
+.canvas-ctrl{display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:13px;color:#555}
+.canvas-ctrl input[type=range]{width:140px;cursor:pointer}
+.canvas-ctrl .val{font-weight:600;color:#4E79A7;min-width:50px}
+.zoom-hint{font-size:11px;color:#999;margin-top:4px}
+.legend{display:flex;gap:12px;margin-top:8px;font-size:12px;flex-wrap:wrap}
+.legend-item{display:flex;align-items:center;gap:4px}
+.legend-dot{width:12px;height:12px;border-radius:50%;display:inline-block}
+#tooltip{position:absolute;background:#fff;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .2s;box-shadow:0 2px 8px rgba(0,0,0,.15);max-width:300px;z-index:100}
+.filter-bar{display:flex;gap:8px;margin-bottom:12px;align-items:center}
+.filter-bar select,.filter-bar input{padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px}
+.node-detail{margin-top:8px;padding:8px;background:#f0f4ff;border-radius:6px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>团伙社区图谱 - 路径追踪查询</h1>
+<div class="stats-bar" id="statsBar">
+<div>节点数: <span class="stat-value" id="nodeCount">-</span></div>
+<div>社区数: <span class="stat-value" id="commCount">-</span></div>
+<div>团伙数: <span class="stat-value" id="gangCount">-</span></div>
+<div>高危团伙: <span class="stat-value" id="hrGangCount">-</span></div>
+<div>最大团伙: <span class="stat-value" id="maxGangSize">-</span></div>
+</div>
+<div class="tabs">
+<div class="tab active" data-tab="gangs">团伙列表</div>
+<div class="tab" data-tab="graph">社区图谱</div>
+<div class="tab" data-tab="path">路径查询</div>
+<div class="tab" data-tab="multipath">多条路径</div>
+<div class="tab" data-tab="node">节点查询</div>
+</div>
+<!-- Tab 1: Gang List -->
+<div class="panel active" id="panel-gangs">
+<div class="filter-bar">
+<label><input type="checkbox" id="hrOnly" onchange="loadGangs()"> 仅看高危团伙</label>
+<span style="flex:1"></span>
+<span id="gangPageInfo" style="font-size:13px;color:#666"></span>
+</div>
+<table id="gangTable">
+<thead><tr>
+<th>社区ID</th><th>大小</th><th>设备数</th><th>用户ID</th><th>支付索引</th><th>证件</th><th>手机</th><th>高危设备</th><th>高危率</th><th>高危团伙</th><th>操作</th>
+</tr></thead>
+<tbody id="gangTbody"></tbody>
+</table>
+<div class="pagination">
+<button class="btn" id="prevPage" onclick="changePage(-1)">上一页</button>
+<span id="pageInfo" style="font-size:13px"></span>
+<button class="btn" id="nextPage" onclick="changePage(1)">下一页</button>
+</div>
+</div>
+<!-- Tab 2: Community Graph -->
+<div class="panel" id="panel-graph">
+<div class="input-group">
+<label>输入社区ID</label>
+<div class="row">
+<input type="number" id="graphCommId" placeholder="社区ID (如 0, 1, 2...)" style="flex:1">
+<input type="number" id="graphLimit" value="200" min="10" max="500" placeholder="节点上限" style="width:120px">
+<button class="btn" onclick="loadGraph()">绘制图谱</button>
+</div>
+</div>
+<div class="legend">
+<div class="legend-item"><span class="legend-dot" style="background:#4E79A7"></span>设备号</div>
+<div class="legend-item"><span class="legend-dot" style="background:#F28E2B"></span>用户ID</div>
+<div class="legend-item"><span class="legend-dot" style="background:#59A14F"></span>支付索引</div>
+<div class="legend-item"><span class="legend-dot" style="background:#E15759"></span>乘机人证件</div>
+<div class="legend-item"><span class="legend-dot" style="background:#B07AA1"></span>乘机人手机</div>
+</div>
+<div class="canvas-ctrl">
+<span>画布宽度:</span>
+<input type="range" id="canvasWidth" min="800" max="4000" value="1200" step="50" oninput="resizeCanvas()">
+<span class="val" id="canvasWidthVal">1200px</span>
+<span>画布高度:</span>
+<input type="range" id="canvasHeight" min="300" max="3000" value="600" step="50" oninput="resizeCanvas()">
+<span class="val" id="canvasHeightVal">600px</span>
+<span style="flex:1"></span>
+<button class="btn" style="padding:6px 14px;font-size:12px" onclick="fitToView()">适应画布</button>
+<button class="btn" style="padding:6px 14px;font-size:12px" onclick="resetZoom()">重置缩放</button>
+</div>
+<div class="zoom-hint">提示: 鼠标滚轮缩放, 拖拽空白处平移画布, 拖拽节点移动节点, 双击节点填入路径查询</div>
+<svg class="graph" id="graphSvg" width="1200" height="600"></svg>
+<div id="graphInfo" style="margin-top:8px;font-size:12px;color:#666"></div>
+</div>
+<!-- Tab 3: Path Query -->
+<div class="panel" id="panel-path">
+<div class="row">
+<div class="input-group"><label>输入值 A (device_id / user_id / 支付索引 / 证件 / 手机)</label><input type="text" id="pathA" placeholder="输入任意值..."></div>
+<div class="input-group"><label>输入值 B</label><input type="text" id="pathB" placeholder="输入任意值..."></div>
+</div>
+<div class="input-group"><label>最大跳数</label><input type="number" id="pathDepth" value="10" min="1" max="30" style="width:100px"></div>
+<button class="btn" onclick="queryPath()">查找路径</button>
+<div class="result-box" id="pathResult">等待查询...</div>
+</div>
+<!-- Tab 4: Multi Path -->
+<div class="panel" id="panel-multipath">
+<div class="row">
+<div class="input-group"><label>输入值 A</label><input type="text" id="mpA" placeholder="输入任意值..."></div>
+<div class="input-group"><label>输入值 B</label><input type="text" id="mpB" placeholder="输入任意值..."></div>
+</div>
+<div class="row">
+<div class="input-group"><label>最大路径数</label><input type="number" id="mpMaxPaths" value="5" min="1" max="20" style="width:80px"></div>
+<div class="input-group"><label>最大跳数</label><input type="number" id="mpMaxDepth" value="8" min="1" max="20" style="width:80px"></div>
+</div>
+<button class="btn" onclick="queryMultiPaths()">查找多条路径</button>
+<div class="result-box" id="mpResult">等待查询...</div>
+</div>
+<!-- Tab 5: Node Lookup -->
+<div class="panel" id="panel-node">
+<div class="input-group"><label>输入节点值 (device_id / user_id / 支付索引 / 证件 / 手机)</label><input type="text" id="nodeInput" placeholder="输入任意值..."></div>
+<button class="btn" onclick="queryNode()">查询节点</button>
+<div class="result-box" id="nodeResult">等待查询...</div>
+</div>
+</div>
+<div id="tooltip"></div>
+<script>
+// Tab switching
+document.querySelectorAll(".tab").forEach(t=>{
+t.addEventListener("click",()=>{
+document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+document.querySelectorAll(".panel").forEach(x=>x.classList.remove("active"));
+t.classList.add("active");
+document.getElementById("panel-"+t.dataset.tab).classList.add("active");
+});
+});
+async function api(u){const r=await fetch(u);return await r.json();}
+function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function typeTag(t){const cls={"device":"tag-device","user":"tag-user","pay":"tag-pay","card":"tag-card","mobile":"tag-mobile"}[t]||"tag-unknown";const lbl={"device":"设备","user":"用户ID","pay":"支付","card":"证件","mobile":"手机"}[t]||t;return `<span class="tag ${cls}">${lbl}</span>`;}
+function nodeDisplay(n){const parts=n.split("::");if(parts.length>1){return esc(parts[1]);}return esc(n);}
+// Stats
+async function loadStats(){try{const d=await api("/api/stats");document.getElementById("nodeCount").textContent=d.node_count;document.getElementById("commCount").textContent=d.community_count;document.getElementById("gangCount").textContent=d.gang_count;document.getElementById("hrGangCount").textContent=d.high_risk_gang_count;document.getElementById("maxGangSize").textContent=d.max_gang_size;}catch(e){console.log(e);}}
+loadStats();
+// Gang list
+let gangPage=1,gangTotal=0;
+const gangSize=20;
+async function loadGangs(){const hr=document.getElementById("hrOnly").checked?1:0;const d=await api(`/api/gangs?page=${gangPage}&size=${gangSize}&high_risk=${hr}`);gangTotal=d.total;const tbody=document.getElementById("gangTbody");tbody.innerHTML=d.gangs.map(g=>{const hrTag=g.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'<span class="tag tag-unknown">普通</span>';return `<tr><td>${g.community_id}</td><td>${g.community_size}</td><td>${g.device_cnt}</td><td>${g.user_cnt}</td><td>${g.pay_cnt}</td><td>${g.card_cnt}</td><td>${g.mob_cnt}</td><td>${g.risk_device_cnt}</td><td>${(g.risk_device_rate*100).toFixed(1)}%</td><td>${hrTag}</td><td><button class="btn" style="padding:4px 10px;font-size:12px" onclick="viewGang(${g.community_id})">查看图谱</button></td></tr>`;}).join("");document.getElementById("pageInfo").textContent=`第${gangPage}页 / 共${Math.ceil(gangTotal/gangSize)}页 (共${gangTotal}个)`;document.getElementById("prevPage").disabled=gangPage<=1;document.getElementById("nextPage").disabled=gangPage>=Math.ceil(gangTotal/gangSize);}
+function changePage(d){gangPage=Math.max(1,gangPage+d);loadGangs();}
+loadGangs();
+function viewGang(id){document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));document.querySelector('[data-tab="graph"]').classList.add("active");document.getElementById("panel-graph").classList.add("active");document.getElementById("graphCommId").value=id;loadGraph();}
+// Community graph with D3 force-directed (zoom + pan + resizable)
+let graphZoom=null,gTransform=null;
+async function loadGraph(){
+  const cid=document.getElementById("graphCommId").value;
+  if(!cid&&cid!==0)return;
+  const limit=document.getElementById("graphLimit").value||200;
+  const d=await api(`/api/gang_graph/${cid}?limit=${limit}`);
+  const svg=d3.select("#graphSvg");
+  svg.selectAll("*").remove();
+  const w=+svg.attr("width")||1200,h=+svg.attr("height")||600;
+  if(!d.nodes.length){
+    svg.append("text").attr("x",w/2).attr("y",h/2).attr("text-anchor","middle").text("该社区无数据");
+    return;
+  }
+  const maxDeg=Math.max(...d.nodes.map(n=>n.degree),1);
+  const rScale=d3.scaleSqrt().domain([0,maxDeg]).range([4,18]);
+
+  // zoom layer: all content goes inside <g> that tracks pan/zoom
+  const g=svg.append("g");
+  gTransform=d3.zoomIdentity;
+  graphZoom=d3.zoom().scaleExtent([0.1,8]).on("zoom",(e)=>{g.attr("transform",e.transform);gTransform=e.transform;});
+  svg.call(graphZoom);
+  // prevent zoom from interfering with node drag
+  svg.on("dblclick.zoom",null);
+
+  const sim=d3.forceSimulation(d.nodes)
+    .force("link",d3.forceLink(d.edges).id(d=>d.id).distance(d=>40+Math.random()*40))
+    .force("charge",d3.forceManyBody().strength(-80))
+    .force("center",d3.forceCenter(w/2,h/2))
+    .force("collide",d3.forceCollide().radius(d=>rScale(d.degree)+3));
+  window.currentSim=sim;window.currentNodes=d.nodes;window.currentLinks=link;window.currentNodesSel=node;
+
+  const link=g.append("g").selectAll("line").data(d.edges).join("line")
+    .attr("stroke","#ccc").attr("stroke-opacity",0.4).attr("stroke-width",1);
+  const node=g.append("g").selectAll("circle").data(d.nodes).join("circle")
+    .attr("r",d=>rScale(d.degree)).attr("fill",d=>d.color)
+    .attr("stroke","#fff").attr("stroke-width",1.5)
+    .call(d3.drag()
+      .on("start",function(e,d){if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
+      .on("drag",function(e,d){d.fx=e.x;d.fy=e.y;})
+      .on("end",function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+
+  const tooltip=d3.select("#tooltip");
+  node.on("mouseover",function(e,d){
+    tooltip.style("opacity",1)
+      .html(`<b>${nodeDisplay(d.id)}</b><br>${typeTag(d.type)}<br>度: ${d.degree}<br>社区: ${cid}`)
+      .style("left",(e.pageX+10)+"px").style("top",(e.pageY-28)+"px");
+  }).on("mouseout",function(){tooltip.style("opacity",0);});
+  node.on("dblclick",function(e,d){
+    e.stopPropagation();
+    document.getElementById("pathA").value=nodeDisplay(d.id);
+    document.getElementById("pathB").focus();
+  });
+
+  sim.on("tick",()=>{
+    link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y)
+        .attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
+    node.attr("cx",d=>d.x).attr("cy",d=>d.y);
+  });
+  document.getElementById("graphInfo").innerHTML=`社区 ${cid}: 共 ${d.total_nodes} 个节点, 显示 ${d.shown_nodes} 个 (双击节点可填入路径查询)`;
+}
+function resizeCanvas(){
+  const svg=d3.select("#graphSvg");
+  const w=+document.getElementById("canvasWidth").value;
+  const h=+document.getElementById("canvasHeight").value;
+  svg.attr("width",w).attr("height",h);
+  document.getElementById("canvasWidthVal").textContent=w+"px";
+  document.getElementById("canvasHeightVal").textContent=h+"px";
+  if(window.currentSim){
+    window.currentSim.force("center",d3.forceCenter(w/2,h/2));
+    window.currentSim.alpha(0.3).restart();
+  }
+}
+function fitToView(){
+  if(!window.currentNodes||window.currentNodes.length===0)return;
+  const svg=d3.select("#graphSvg");
+  const w=+svg.attr("width")||1200,h=+svg.attr("height")||600;
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  window.currentNodes.forEach(n=>{
+    if(n.x<minX)minX=n.x; if(n.x>maxX)maxX=n.x;
+    if(n.y<minY)minY=n.y; if(n.y>maxY)maxY=n.y;
+  });
+  const pad=40;
+  const gW=Math.max(maxX-minX,1),gH=Math.max(maxY-minY,1);
+  const scale=Math.min((w-2*pad)/gW,(h-2*pad)/gH,3);
+  const tx=w/2-(minX+maxX)/2*scale;
+  const ty=h/2-(minY+maxY)/2*scale;
+  if(graphZoom){svg.transition().duration(500).call(graphZoom.transform,d3.zoomIdentity.translate(tx,ty).scale(scale));}
+}
+function resetZoom(){
+  const svg=d3.select("#graphSvg");
+  if(graphZoom){svg.transition().duration(500).call(graphZoom.transform,d3.zoomIdentity);}
+}
+
+// Path query
+async function queryPath(){const a=document.getElementById("pathA").value.trim();const b=document.getElementById("pathB").value.trim();const md=document.getElementById("pathDepth").value;const box=document.getElementById("pathResult");if(!a||!b){box.innerHTML='<span class="error">请输入两个值</span>';return;}box.innerHTML='<span class="loading">查找路径中...</span>';const d=await api(`/api/path?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&max_depth=${md}`);if(d.path){let html='<span class="success">找到路径!</span><br>';html+=`A: <b>${esc(d.a_raw||a)}</b> -> B: <b>${esc(d.b_raw||b)}</b><br>`;html+=`跳数: ${d.steps} | 社区: ${d.community!==null?d.community:'-'}<br><br>`;d.detail.forEach(s=>{html+=`<div class="path-step">`;html+=`<div class="node-label">Step ${s.step}</div>`;html+=`<div class="node-value">${nodeDisplay(s.from)} ${typeTag(s.from_type)}</div>`;html+=`<div class="relation">--[共享${esc(s.via)}]--></div>`;html+=`<div class="node-value">${nodeDisplay(s.to)} ${typeTag(s.to_type)}</div>`;html+=`</div>`;});box.innerHTML=html;}else{box.innerHTML=`<span class="error">${esc(d.message||'未找到路径')}</span>`;}}
+// Multi paths
+async function queryMultiPaths(){const a=document.getElementById("mpA").value.trim();const b=document.getElementById("mpB").value.trim();const mp=document.getElementById("mpMaxPaths").value;const md=document.getElementById("mpMaxDepth").value;const box=document.getElementById("mpResult");if(!a||!b){box.innerHTML='<span class="error">请输入两个值</span>';return;}box.innerHTML='<span class="loading">查找路径中...</span>';const d=await api(`/api/paths?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&max_paths=${mp}&max_depth=${md}`);if(d.paths&&d.paths.length>0){let html=`<span class="success">找到 ${d.count} 条路径</span><br><br>`;d.paths.forEach((p,idx)=>{html+=`<div style="margin-bottom:12px"><b>路径 ${idx+1} (跳数:${p.steps})</b><br>`;html+=p.path.map(n=>nodeDisplay(n)).join(" -> ");html+="</div>";});box.innerHTML=html;}else{box.innerHTML='<span class="error">未找到路径</span>';}}
+// Node lookup
+async function queryNode(){const v=document.getElementById("nodeInput").value.trim();const box=document.getElementById("nodeResult");if(!v){box.innerHTML='<span class="error">请输入值</span>';return;}box.innerHTML='<span class="loading">查询中...</span>';const d=await api(`/api/node/${encodeURIComponent(v)}`);if(d.found){let html='<span class="success">找到节点!</span><br>';html+=`原始输入: ${esc(d.raw_input)}<br>`;html+=`匹配节点: <b>${nodeDisplay(d.node)}</b> ${typeTag(d.type)}<br>`;html+=`所属社区: ${d.community_id}<br>`;html+=`邻居数(度): ${d.degree}<br><br>`;html+='<b>邻居列表:</b><br>';d.neighbors.forEach(nb=>{html+=`<span style="margin:2px;display:inline-block">${nodeDisplay(nb.node)} ${typeTag(nb.type)}</span>`;});box.innerHTML=html;}else{box.innerHTML=`<span class="error">${esc(d.message)}</span>`;}}
+</script>
+</body>
+</html>

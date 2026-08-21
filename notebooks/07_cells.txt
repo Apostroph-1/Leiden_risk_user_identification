@@ -1,0 +1,396 @@
+##MD##
+# 07 Leiden 团伙识别（重做版）
+
+**核心改动**:
+- 将原始宽表中 1 行 1 设备对应多个 user_id / pay_tool / 乘机人证件 / 乘机人手机 **先 explode 成多行**
+- 以 device_id 为主键，其他信息交叉后合并社区
+- 每条边保留完整溯源（哪个设备通过哪个实体连接）
+- BFS 路径追踪：同一社区内任意输入两个值 (device_id / user_id / pay_tool / 证件 / 手机)，找到 A→B 的完整链路
+
+> 带 `[TUNABLE]` 注释的参数可根据业务需要调整，注释中标注了修改范围和影响。
+> 所有输入输出通过 pandas，编码统一 UTF-8-SIG。
+##CODE##
+import os, ast, time, json
+from collections import defaultdict, deque
+import numpy as np
+import pandas as pd
+from tqdm.auto import tqdm
+import igraph as ig
+import leidenalg
+
+# ---------- 路径配置 ----------
+# [TUNABLE] 修改范围: 数据/输出目录
+# 影响内容: 决定读写位置
+BASE = r"d:/Qunar_work/workbuddy_data/leiden"
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+os.makedirs(OUT, exist_ok=True)
+
+# [TUNABLE] 输入宽表文件名
+# 影响内容: 切换不同时间窗口数据
+INPUT_CSV = os.path.join(DATA, "flight_feature_detail_8.19-90days.csv")
+
+# [TUNABLE] 风险评分文件
+# 影响内容: 上一步(08 notebook)产出的风险分层结果
+RISK_CSV = os.path.join(OUT, "device_risk_score.csv")
+
+# [TUNABLE] 是否只对高风险设备构图（True=仅高风险, False=全量）
+# 影响内容: True=图小速度快(27K设备); False=图大速度慢(865K设备)
+RISK_ONLY = True
+
+# [TUNABLE] 最小团伙大小
+# 影响内容: 小于此值的社区会被过滤掉
+MIN_COMMUNITY_SIZE = 3
+##MD##
+## 1. 加载数据
+读取设备级宽表 + 风险评分结果。
+##CODE##
+print("[1/6] 加载数据")
+t0 = time.time()
+df = pd.read_csv(INPUT_CSV, encoding="utf-8")
+print(f"  宽表 {len(df)} 行, 耗时 {time.time()-t0:.1f}s")
+
+# 加载风险评分
+risk_df = pd.read_csv(RISK_CSV, encoding="utf-8-sig")
+risk_devices = set(risk_df[risk_df["risk_level"] == "高风险"]["device_id"].values)
+print(f"  高风险设备 {len(risk_devices)} 个")
+
+if RISK_ONLY and risk_devices:
+    df = df[df["device_id"].isin(risk_devices)].copy()
+    print(f"  仅对 {len(df)} 个高风险设备构图")
+##MD##
+## 2. 解析多值列
+将 `["A","B"]` 格式的字符串解析为 Python list。
+##CODE##
+def parse_array(s):
+    """把 ["A","B"] 字符串解析为 list"""
+    if pd.isna(s) or s == "" or s == "[]":
+        return []
+    try:
+        val = ast.literal_eval(s)
+        if isinstance(val, list):
+            return [str(x).strip() for x in val if str(x).strip()]
+        return [str(val).strip()]
+    except Exception:
+        # 兼容非标准 JSON
+        return [x.strip().strip('"').strip("'") for x in str(s).strip("[]").split(",") if x.strip()]
+
+# 测试解析
+sample = df.iloc[0]
+print(f"  user_id: {parse_array(sample['flight_distinct_user_id'])[:3]}")
+print(f"  pay_tool: {parse_array(sample['flight_pay_tool_detail'])[:3]}")
+print(f"  card:    {parse_array(sample['flight_uid_card_info'])[:3]}")
+print(f"  mobile:  {parse_array(sample['flight_passenger_mobile_info'])[:3]}")
+##MD##
+## 3. Explode 多值列
+将 1 行 1 设备对应多个实体的情况，**explode 成多行**，每行一个 (device_id, entity_value) 对。
+
+| 列名 | entity_type | 前缀 |
+|------|-------------|------|
+| flight_distinct_user_id | user | user:: |
+| flight_pay_tool_detail | pay | pay:: |
+| flight_uid_card_info | card | card:: |
+| flight_passenger_mobile_info | mobile | mob:: |
+
+这样同一个 user_id 被多个设备使用时，它们会在图中通过 `user::xxx` 节点连通。
+##CODE##
+# [TUNABLE] 列映射: 可以增删列来调整构图范围
+# 影响内容: 增加列->更多连接线索; 删除列->减少噪音但可能漏掉团伙
+COLUMN_MAP = [
+    ("flight_distinct_user_id",    "user"),
+    ("flight_pay_tool_detail",     "pay"),
+    ("flight_uid_card_info",       "card"),
+    ("flight_passenger_mobile_info", "mobile"),
+]
+
+print("[2/6] Explode 多值列")
+exploded_parts = []
+
+for col, etype in tqdm(COLUMN_MAP, desc="  Explode"):
+    if col not in df.columns:
+        continue
+    sub = df[["device_id", col]].copy()
+    # 过滤空值
+    sub = sub[sub[col].notna() & (sub[col].astype(str).str.strip() != "") & (sub[col].astype(str).str.strip() != "[]")]
+    if sub.empty:
+        continue
+    # 解析为 list
+    sub["parsed"] = sub[col].apply(parse_array)
+    sub = sub[sub["parsed"].apply(len) > 0]
+    # explode 成多行
+    sub = sub.explode("parsed")
+    sub = sub[sub["parsed"].notna() & (sub["parsed"] != "")].copy()
+    # 构建边表
+    edges = pd.DataFrame({
+        "device_id": sub["device_id"].values,
+        "entity_value": sub["parsed"].values,
+        "entity_type": etype,
+    })
+    # 加前缀避免不同类型值冲突
+    edges["entity_node"] = etype + "::" + edges["entity_value"].astype(str)
+    exploded_parts.append(edges)
+    print(f"    {etype}: {len(edges)} 条")
+
+all_edges = pd.concat(exploded_parts, ignore_index=True) if exploded_parts else pd.DataFrame()
+print(f"  总边数: {len(all_edges)}")
+all_edges.head(5)
+##MD##
+## 4. 构建 igraph + Leiden 社区发现
+
+图结构:
+- 节点: device_id + entity_node (user::xxx / pay::xxx / card::xxx / mob::xxx)
+- 边: device_id ↔ entity_node (无向)
+- 当两个设备共享同一个 entity_node 时，它们在图中连通
+
+Leiden 算法基于模块度优化，自动发现社区（团伙）。
+##CODE##
+print("[3/6] 构建 igraph + Leiden")
+t0 = time.time()
+
+# 收集所有节点
+device_nodes = all_edges["device_id"].unique().tolist()
+entity_nodes = all_edges["entity_node"].unique().tolist()
+all_nodes = device_nodes + entity_nodes
+node2id = {n: i for i, n in enumerate(all_nodes)}
+n = len(all_nodes)
+print(f"  节点数: {n} (设备 {len(device_nodes)} + 实体 {len(entity_nodes)})")
+
+# 构建边列表（去重 + 加权）
+all_edges["src_id"] = all_edges["device_id"].map(node2id)
+all_edges["dst_id"] = all_edges["entity_node"].map(node2id)
+edge_agg = all_edges.groupby(["src_id", "dst_id"]).size().reset_index(name="weight")
+el = list(zip(edge_agg["src_id"], edge_agg["dst_id"]))
+ew = list(edge_agg["weight"])
+print(f"  去重后边数: {len(el)}")
+
+# 节点类型
+node_types = []
+for nd in all_nodes:
+    if nd in set(device_nodes):
+        node_types.append("device")
+    else:
+        node_types.append(nd.split("::")[0])
+
+# Leiden 是 C 层面同步阻塞调用, 无法显示中间进度, 用计时替代
+print("  Leiden 社区发现中...（预计 10-30s）")
+t1 = time.time()
+G = ig.Graph(n=n, edges=el, directed=False)
+G.es["weight"] = ew
+G.vs["name"] = all_nodes
+G.vs["type"] = node_types
+partition = leidenalg.find_partition(
+    G, leidenalg.ModularityVertexPartition,
+    weights="weight", seed=42
+)
+print(f"  Leiden 完成, 耗时 {time.time()-t1:.1f}s")
+
+print(f"  社区数: {len(set(partition.membership))}")
+print(f"  耗时: {time.time()-t0:.1f}s")
+
+# 构建社区表
+comm_df = pd.DataFrame({
+    "node": all_nodes,
+    "node_type": node_types,
+    "community_id": partition.membership,
+})
+##MD##
+## 5. 团伙统计 & 路径追踪
+
+### 5.1 团伙列表统计
+##CODE##
+print("[4/6] 团伙统计")
+
+# 按社区统计
+comm_stat = comm_df.groupby("community_id").agg(
+    community_size=("node", "count"),
+    device_cnt=("node_type", lambda x: sum(t == "device" for t in comm_df.loc[x.index, "node_type"])),
+    user_cnt=("node_type", lambda x: sum(t == "user" for t in comm_df.loc[x.index, "node_type"])),
+    pay_cnt=("node_type", lambda x: sum(t == "pay" for t in comm_df.loc[x.index, "node_type"])),
+    card_cnt=("node_type", lambda x: sum(t == "card" for t in comm_df.loc[x.index, "node_type"])),
+    mob_cnt=("node_type", lambda x: sum(t == "mobile" for t in comm_df.loc[x.index, "node_type"])),
+).reset_index()
+
+# 高风险设备数
+comm_device = comm_df[comm_df["node_type"] == "device"]
+comm_device = comm_device.merge(
+    pd.DataFrame({"node": list(risk_devices), "is_risk": 1}),
+    on="node", how="left"
+)
+comm_device["is_risk"] = comm_device["is_risk"].fillna(0).astype(int)
+risk_per_comm = comm_device.groupby("community_id")["is_risk"].sum().reset_index(name="risk_device_cnt")
+comm_stat = comm_stat.merge(risk_per_comm, on="community_id", how="left")
+comm_stat["risk_device_cnt"] = comm_stat["risk_device_cnt"].fillna(0).astype(int)
+comm_stat["risk_device_rate"] = (comm_stat["risk_device_cnt"] / comm_stat["device_cnt"].replace(0, 1)).round(3)
+
+# [TUNABLE] 高危团伙标记条件
+# 影响内容: 改大阈值->高危团伙更少更严格; 改小->更多团伙被标记
+# 注意: RISK_ONLY=True 时构图设备均为高风险, risk_device_rate 恒为 1.0,
+#       因此改用社区规模阈值标记高危团伙
+if RISK_ONLY:
+    comm_stat["is_high_risk_gang"] = (comm_stat["community_size"] >= 10).astype(int)
+else:
+    comm_stat["is_high_risk_gang"] = (
+        (comm_stat["community_size"] >= 5) |
+        (comm_stat["risk_device_rate"] >= 0.5)
+    ).astype(int)
+
+# 过滤小社区
+comm_stat = comm_stat[comm_stat["community_size"] >= MIN_COMMUNITY_SIZE].copy()
+comm_stat = comm_stat.sort_values(["is_high_risk_gang", "community_size"], ascending=[False, False])
+comm_stat = comm_stat.reset_index(drop=True)
+
+# 重新编号社区ID（过滤后连续）
+comm_stat["community_id_new"] = range(len(comm_stat))
+comm_map = dict(zip(comm_stat["community_id"], comm_stat["community_id_new"]))
+comm_df["community_id"] = comm_df["community_id"].map(comm_map)
+
+print(f"  团伙总数: {len(comm_stat)}")
+print(f"  高危团伙: {comm_stat['is_high_risk_gang'].sum()}")
+print(f"  最大团伙: {comm_stat['community_size'].max()}")
+comm_stat.head(10)
+##MD##
+### 5.2 路径追踪 (BFS)
+
+构建邻接表，支持在任意两个节点之间查找最短路径。
+
+**输入**: 任意两个值 (device_id / user_id / pay_tool / 证件号 / 手机号)
+**输出**: A→B 的完整链路，每步标注节点类型和连接关系
+##CODE##
+print("[5/6] 构建路径追踪 (BFS)")
+
+# 构建邻接表
+# key = node_name, value = set of neighbor node_names
+adj = defaultdict(set)
+node_type_map = dict(zip(comm_df["node"], comm_df["node_type"]))
+node_comm_map = dict(zip(comm_df["node"], comm_df["community_id"]))
+
+# 向量化构建: 用 groupby 一次构建 device -> entities 映射
+for dev, ents in tqdm(all_edges.groupby("device_id")["entity_node"].apply(set).items(),
+                       total=all_edges["device_id"].nunique(), desc="  邻接表"):
+    adj[dev].update(ents)
+    for e in ents:
+        adj[e].add(dev)
+
+print(f"  邻接表节点数: {len(adj)}")
+
+
+def find_path(a, b, max_depth=10):
+    """BFS 查找 a→b 的最短路径
+    返回: {"path": [node1, node2, ...], "steps": [...], "community": comm_id}
+    """
+    a, b = str(a), str(b)
+    # 尝试自动匹配: 如果输入的不是带前缀的节点名, 尝试加前缀
+    if a not in adj:
+        for prefix in ["user::", "pay::", "card::", "mob::"]:
+            if prefix + a in adj:
+                a = prefix + a
+                break
+    if b not in adj:
+        for prefix in ["user::", "pay::", "card::", "mob::"]:
+            if prefix + b in adj:
+                b = prefix + b
+                break
+    if a not in adj or b not in adj:
+        missing = []
+        if a not in adj: missing.append(a)
+        if b not in adj: missing.append(b)
+        return {"path": None, "message": f"节点不在图中: {missing}"}
+    if a == b:
+        return {"path": [a], "steps": 0, "message": "两个值相同"}
+
+    comm_a = node_comm_map.get(a)
+    comm_b = node_comm_map.get(b)
+    if comm_a is not None and comm_b is not None and comm_a != comm_b:
+        return {"path": None, "message": f"不在同一社区 (A={comm_a}, B={comm_b})"}
+
+    visited = {a}
+    queue = deque([(a, [a])])
+    while queue:
+        current, path = queue.popleft()
+        if len(path) > max_depth * 2 + 1:
+            continue
+        for neighbor in adj[current]:
+            if neighbor in visited:
+                continue
+            new_path = path + [neighbor]
+            if neighbor == b:
+                steps = []
+                for i in range(len(new_path) - 1):
+                    nf, nt = new_path[i], new_path[i+1]
+                    steps.append({
+                        "step": i + 1,
+                        "from": nf,
+                        "from_type": node_type_map.get(nf, "unknown"),
+                        "to": nt,
+                        "to_type": node_type_map.get(nt, "unknown"),
+                        "via": "shared " + (nt.split("::")[0] if "::" in nt else nf.split("::")[0] if "::" in nf else "entity"),
+                    })
+                return {"path": new_path, "steps": len(new_path)-1, "detail": steps, "community": comm_a}
+            visited.add(neighbor)
+            queue.append((neighbor, new_path))
+    return {"path": None, "message": f"超过 {max_depth} 跳未找到路径"}
+
+# 示例: 查找前两个高风险设备的路径
+sample_devices = list(risk_devices)[:2]
+if len(sample_devices) >= 2:
+    result = find_path(sample_devices[0], sample_devices[1])
+    print(f"  示例路径: {sample_devices[0]} -> {sample_devices[1]}")
+    if result.get("path"):
+        print(f"  路径: {' -> '.join(result['path'])}")
+        print(f"  跳数: {result['steps']}")
+        for s in result.get("detail", []):
+            print(f"    Step {s['step']}: {s['from']} ({s['from_type']}) -> {s['to']} ({s['to_type']}) [{s['via']}]")
+    else:
+        print(f"  {result.get('message')}")
+##MD##
+## 6. 输出
+
+所有输出统一 UTF-8-SIG 编码（Excel 可直接打开）。
+
+| 文件 | 内容 |
+|------|------|
+| exploded_edges.csv | 展开后的边表（device_id, entity_value, entity_type, entity_node）|
+| device_community.csv | 节点级社区归属（node, node_type, community_id）|
+| gang_list.csv | 团伙列表统计 |
+##CODE##
+print("[6/6] 输出")
+
+# 1. 展开边表（完整溯源）
+all_edges_out = all_edges[["device_id", "entity_value", "entity_type", "entity_node"]].copy()
+all_edges_out.to_csv(os.path.join(OUT, "exploded_edges.csv"), index=False, encoding="utf-8-sig")
+print(f"  exploded_edges.csv ({len(all_edges_out)} 行)")
+
+# 2. 节点级社区归属
+comm_df_out = comm_df[["node", "node_type", "community_id"]].copy()
+comm_df_out.to_csv(os.path.join(OUT, "device_community.csv"), index=False, encoding="utf-8-sig")
+print(f"  device_community.csv ({len(comm_df_out)} 行)")
+
+# 3. 团伙列表
+gang_out = comm_stat[["community_id_new", "community_size", "device_cnt", "user_cnt",
+                      "pay_cnt", "card_cnt", "mob_cnt", "risk_device_cnt",
+                      "risk_device_rate", "is_high_risk_gang"]].copy()
+gang_out.columns = ["community_id", "community_size", "device_cnt", "user_cnt",
+                    "pay_cnt", "card_cnt", "mob_cnt", "risk_device_cnt",
+                    "risk_device_rate", "is_high_risk_gang"]
+gang_out.to_csv(os.path.join(OUT, "gang_list.csv"), index=False, encoding="utf-8-sig")
+print(f"  gang_list.csv ({len(gang_out)} 行)")
+
+# 4. 邻接表 JSON（供查询服务加载, 避免每次重建）
+adj_out = {k: list(v) for k, v in adj.items()}
+adj_data = {
+    "adjacency": adj_out,
+    "node_types": node_type_map,
+    "node_communities": node_comm_map,
+}
+adj_path = os.path.join(OUT, "graph_adjacency.json")
+with open(adj_path, "w", encoding="utf-8") as f:
+    json.dump(adj_data, f, ensure_ascii=False)
+print(f"  graph_adjacency.json ({len(adj_out)} 节点)")
+
+print(f"\n[完成] 输出目录: {OUT}")
+print(f"  - exploded_edges.csv    展开边表（可追溯）")
+print(f"  - device_community.csv  节点级社区归属")
+print(f"  - gang_list.csv          团伙列表统计")
+print(f"  - graph_adjacency.json   邻接表（供查询服务）")
+print(f"\n  启动查询服务: python tools/community_server.py")
+print(f"  前端可视化:   打开 tools/community_viz.html")
