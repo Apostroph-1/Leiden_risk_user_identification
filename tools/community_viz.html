@@ -93,6 +93,9 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" id="prevPage" onclick="changePage(-1)">上一页</button>
 <span id="pageInfo" style="font-size:13px"></span>
 <button class="btn" id="nextPage" onclick="changePage(1)">下一页</button>
+<span style="margin-left:8px;font-size:13px;color:#666">跳转</span>
+<input type="number" id="gangJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpGangPage()">
+<button class="btn" style="padding:6px 14px" onclick="jumpGangPage()">GO</button>
 </div>
 </div>
 <!-- Tab 2: Community Graph -->
@@ -111,6 +114,9 @@ svg.graph:active{cursor:grabbing}
 <div class="legend-item"><span class="legend-dot" style="background:#59A14F"></span>支付索引</div>
 <div class="legend-item"><span class="legend-dot" style="background:#E15759"></span>乘机人证件</div>
 <div class="legend-item"><span class="legend-dot" style="background:#B07AA1"></span>乘机人手机</div>
+</div>
+<div style="margin-bottom:8px;padding:8px 12px;background:#f8f9fa;border-radius:6px;font-size:12px;color:#555;line-height:1.6">
+<b style="color:#4E79A7">度数说明:</b> 图中每个节点的"度"表示该节点在社区内与其他节点的直接连接数。度越高，说明该节点在团伙中的关联越密集。例如某设备号节点度=96，表示它与其他96个节点（可能包含用户ID、支付索引、证件、手机等）有直接关联，是团伙中的核心枢纽节点。
 </div>
 <div class="canvas-ctrl">
 <span>画布宽度:</span>
@@ -184,6 +190,9 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" id="metricsPrev" onclick="changeMetricsPage(-1)">上一页</button>
 <span id="metricsPageNum" style="font-size:13px"></span>
 <button class="btn" id="metricsNext" onclick="changeMetricsPage(1)">下一页</button>
+<span style="margin-left:8px;font-size:13px;color:#666">跳转</span>
+<input type="number" id="metricsJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpMetricsPage()">
+<button class="btn" style="padding:6px 14px" onclick="jumpMetricsPage()">GO</button>
 </div>
 <div id="metricsDetail" style="margin-top:16px;display:none">
 <h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="metricsDetailCommId"></span> 设备明细</h3>
@@ -197,6 +206,9 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" id="detailPrev" onclick="changeDetailPage(-1)">上一页</button>
 <span id="detailPageNum" style="font-size:13px"></span>
 <button class="btn" id="detailNext" onclick="changeDetailPage(1)">下一页</button>
+<span style="margin-left:8px;font-size:13px;color:#666">跳转</span>
+<input type="number" id="detailJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpDetailPage()">
+<button class="btn" style="padding:6px 14px" onclick="jumpDetailPage()">GO</button>
 </div>
 </div>
 </div>
@@ -224,6 +236,8 @@ let gangPage=1,gangTotal=0;
 const gangSize=20;
 async function loadGangs(){const hr=document.getElementById("hrOnly").checked?1:0;const d=await api(`/api/gangs?page=${gangPage}&size=${gangSize}&high_risk=${hr}`);gangTotal=d.total;const tbody=document.getElementById("gangTbody");tbody.innerHTML=d.gangs.map(g=>{const hrTag=g.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'<span class="tag tag-unknown">普通</span>';return `<tr><td>${g.community_id}</td><td>${g.community_size}</td><td>${g.device_cnt}</td><td>${g.user_cnt}</td><td>${g.pay_cnt}</td><td>${g.card_cnt}</td><td>${g.mob_cnt}</td><td>${g.risk_device_cnt}</td><td>${(g.risk_device_rate*100).toFixed(1)}%</td><td>${hrTag}</td><td><button class="btn" style="padding:4px 10px;font-size:12px" onclick="viewGang(${g.community_id})">查看图谱</button></td></tr>`;}).join("");document.getElementById("pageInfo").textContent=`第${gangPage}页 / 共${Math.ceil(gangTotal/gangSize)}页 (共${gangTotal}个)`;document.getElementById("prevPage").disabled=gangPage<=1;document.getElementById("nextPage").disabled=gangPage>=Math.ceil(gangTotal/gangSize);}
 function changePage(d){gangPage=Math.max(1,gangPage+d);loadGangs();}
+function jumpGangPage(){const v=parseInt(document.getElementById("gangJumpInput").value)||1;const maxP=Math.ceil(gangTotal/gangSize);gangPage=Math.min(Math.max(1,v),maxP);loadGangs();}
+
 loadGangs();
 function viewGang(id){document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));document.querySelector('[data-tab="graph"]').classList.add("active");document.getElementById("panel-graph").classList.add("active");document.getElementById("graphCommId").value=id;loadGraph();}
 // Community graph with D3 force-directed (zoom + pan + resizable)
@@ -251,24 +265,24 @@ async function loadGraph(){
   // prevent zoom from interfering with node drag
   svg.on("dblclick.zoom",null);
 
-  const sim=d3.forceSimulation(d.nodes)
-    .force("link",d3.forceLink(d.edges).id(d=>d.id).distance(d=>40+Math.random()*40))
-    .force("charge",d3.forceManyBody().strength(-80))
-    .force("center",d3.forceCenter(w/2,h/2))
-    .force("collide",d3.forceCollide().radius(d=>rScale(d.degree)+3));
+ const sim=d3.forceSimulation(d.nodes)
+   .force("link",d3.forceLink(d.edges).id(d=>d.id).distance(d=>40+Math.random()*40))
+   .force("charge",d3.forceManyBody().strength(-80))
+   .force("center",d3.forceCenter(w/2,h/2))
+   .force("collide",d3.forceCollide().radius(d=>rScale(d.degree)+3));
+ const link=g.append("g").selectAll("line").data(d.edges).join("line")
+   .attr("stroke","#ccc").attr("stroke-opacity",0.4).attr("stroke-width",1);
+ const node=g.append("g").selectAll("circle").data(d.nodes).join("circle")
+   .attr("r",d=>rScale(d.degree)).attr("fill",d=>d.color)
+   .attr("stroke","#fff").attr("stroke-width",1.5)
+   .call(d3.drag()
+     .on("start",function(e,d){if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
+     .on("drag",function(e,d){d.fx=e.x;d.fy=e.y;})
+     .on("end",function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+
   window.currentSim=sim;window.currentNodes=d.nodes;window.currentLinks=link;window.currentNodesSel=node;
 
-  const link=g.append("g").selectAll("line").data(d.edges).join("line")
-    .attr("stroke","#ccc").attr("stroke-opacity",0.4).attr("stroke-width",1);
-  const node=g.append("g").selectAll("circle").data(d.nodes).join("circle")
-    .attr("r",d=>rScale(d.degree)).attr("fill",d=>d.color)
-    .attr("stroke","#fff").attr("stroke-width",1.5)
-    .call(d3.drag()
-      .on("start",function(e,d){if(!e.active)sim.alphaTarget(0.3).restart();d.fx=d.x;d.fy=d.y;})
-      .on("drag",function(e,d){d.fx=e.x;d.fy=e.y;})
-      .on("end",function(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
-
-  const tooltip=d3.select("#tooltip");
+ const tooltip=d3.select("#tooltip");
   node.on("mouseover",function(e,d){
     tooltip.style("opacity",1)
       .html(`<b>${nodeDisplay(d.id)}</b><br>${typeTag(d.type)}<br>度: ${d.degree}<br>社区: ${cid}`)
@@ -388,6 +402,8 @@ function changeMetricsPage(d){
   metricsPage=Math.max(1,metricsPage+d);
   loadMetrics();
 }
+function jumpMetricsPage(){const v=parseInt(document.getElementById("metricsJumpInput").value)||1;const maxP=Math.ceil(metricsTotal/metricsSize);metricsPage=Math.min(Math.max(1,v),maxP);loadMetrics();}
+
 
 async function viewMetricsDetail(commId){
   currentMetricsCommId=commId;
@@ -444,6 +460,8 @@ function changeDetailPage(d){
   detailPage=Math.max(1,detailPage+d);
   loadMetricsDetail();
 }
+function jumpDetailPage(){const v=parseInt(document.getElementById("detailJumpInput").value)||1;const maxP=Math.ceil(detailTotal/detailSize);detailPage=Math.min(Math.max(1,v),maxP);loadMetricsDetail();}
+
 
 // Auto-load metrics on first tab switch
 document.querySelector('[data-tab="metrics"]').addEventListener("click",()=>{if(metricsTotal===0)loadMetrics();});
