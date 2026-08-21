@@ -43,6 +43,7 @@ tr:hover{background:#f8f9fa}
 .path-step .relation{font-size:12px;color:#4E79A7;margin:2px 0}
 svg.graph{display:block;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:grab}
 #panel-graph{overflow:auto}
+#panel-metrics{overflow:auto}
 svg.graph:active{cursor:grabbing}
 .canvas-ctrl{display:flex;gap:8px;align-items:center;margin-bottom:8px;font-size:13px;color:#555}
 .canvas-ctrl input[type=range]{width:140px;cursor:pointer}
@@ -73,6 +74,7 @@ svg.graph:active{cursor:grabbing}
 <div class="tab" data-tab="path">路径查询</div>
 <div class="tab" data-tab="multipath">多条路径</div>
 <div class="tab" data-tab="node">节点查询</div>
+<div class="tab" data-tab="metrics">社区指标</div>
 </div>
 <!-- Tab 1: Gang List -->
 <div class="panel active" id="panel-gangs">
@@ -153,6 +155,50 @@ svg.graph:active{cursor:grabbing}
 <div class="input-group"><label>输入节点值 (device_id / user_id / 支付索引 / 证件 / 手机)</label><input type="text" id="nodeInput" placeholder="输入任意值..."></div>
 <button class="btn" onclick="queryNode()">查询节点</button>
 <div class="result-box" id="nodeResult">等待查询...</div>
+</div>
+<!-- Tab 6: Community Metrics -->
+<div class="panel" id="panel-metrics">
+<div class="filter-bar">
+<select id="metricsSort" onchange="loadMetrics()">
+<option value="comp_total">按赔付金额排序</option>
+<option value="refund">按退款金额排序</option>
+<option value="order_cnt">按订单量排序</option>
+<option value="device_cnt">按设备数排序</option>
+<option value="scalper">按黄牛单量排序</option>
+<option value="intercept">按拦截单量排序</option>
+</select>
+<select id="metricsDir" onchange="loadMetrics()">
+<option value="desc">降序</option>
+<option value="asc">升序</option>
+</select>
+<span style="flex:1"></span>
+<span id="metricsPageInfo" style="font-size:13px;color:#666"></span>
+</div>
+<table id="metricsTable">
+<thead><tr>
+<th>社区ID</th><th>设备数</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>退款率</th><th>赔付率</th><th>黄牛单</th><th>拦截单</th><th>高危设备</th><th>异常投票</th><th>规则命中</th><th>风险分布</th>
+</tr></thead>
+<tbody id="metricsTbody"></tbody>
+</table>
+<div class="pagination">
+<button class="btn" id="metricsPrev" onclick="changeMetricsPage(-1)">上一页</button>
+<span id="metricsPageNum" style="font-size:13px"></span>
+<button class="btn" id="metricsNext" onclick="changeMetricsPage(1)">下一页</button>
+</div>
+<div id="metricsDetail" style="margin-top:16px;display:none">
+<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="metricsDetailCommId"></span> 设备明细</h3>
+<table id="detailTable" style="font-size:12px">
+<thead><tr>
+<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>退款率</th><th>赔付率</th><th>多账号</th><th>机器退款</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
+</tr></thead>
+<tbody id="detailTbody"></tbody>
+</table>
+<div class="pagination">
+<button class="btn" id="detailPrev" onclick="changeDetailPage(-1)">上一页</button>
+<span id="detailPageNum" style="font-size:13px"></span>
+<button class="btn" id="detailNext" onclick="changeDetailPage(1)">下一页</button>
+</div>
+</div>
 </div>
 </div>
 <div id="tooltip"></div>
@@ -280,6 +326,127 @@ async function queryPath(){const a=document.getElementById("pathA").value.trim()
 async function queryMultiPaths(){const a=document.getElementById("mpA").value.trim();const b=document.getElementById("mpB").value.trim();const mp=document.getElementById("mpMaxPaths").value;const md=document.getElementById("mpMaxDepth").value;const box=document.getElementById("mpResult");if(!a||!b){box.innerHTML='<span class="error">请输入两个值</span>';return;}box.innerHTML='<span class="loading">查找路径中...</span>';const d=await api(`/api/paths?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&max_paths=${mp}&max_depth=${md}`);if(d.paths&&d.paths.length>0){let html=`<span class="success">找到 ${d.count} 条路径</span><br><br>`;d.paths.forEach((p,idx)=>{html+=`<div style="margin-bottom:12px"><b>路径 ${idx+1} (跳数:${p.steps})</b><br>`;html+=p.path.map(n=>nodeDisplay(n)).join(" -> ");html+="</div>";});box.innerHTML=html;}else{box.innerHTML='<span class="error">未找到路径</span>';}}
 // Node lookup
 async function queryNode(){const v=document.getElementById("nodeInput").value.trim();const box=document.getElementById("nodeResult");if(!v){box.innerHTML='<span class="error">请输入值</span>';return;}box.innerHTML='<span class="loading">查询中...</span>';const d=await api(`/api/node/${encodeURIComponent(v)}`);if(d.found){let html='<span class="success">找到节点!</span><br>';html+=`原始输入: ${esc(d.raw_input)}<br>`;html+=`匹配节点: <b>${nodeDisplay(d.node)}</b> ${typeTag(d.type)}<br>`;html+=`所属社区: ${d.community_id}<br>`;html+=`邻居数(度): ${d.degree}<br><br>`;html+='<b>邻居列表:</b><br>';d.neighbors.forEach(nb=>{html+=`<span style="margin:2px;display:inline-block">${nodeDisplay(nb.node)} ${typeTag(nb.type)}</span>`;});box.innerHTML=html;}else{box.innerHTML=`<span class="error">${esc(d.message)}</span>`;}}
+
+// Community metrics
+let metricsPage=1,metricsTotal=0;
+const metricsSize=20;
+let detailPage=1,detailTotal=0;
+const detailSize=50;
+let currentMetricsCommId=null;
+
+async function loadMetrics(){
+  const sort=document.getElementById("metricsSort").value;
+  const dir=document.getElementById("metricsDir").value;
+  const d=await api(`/api/community_metrics?page=${metricsPage}&size=${metricsSize}&sort=${sort}&dir=${dir}`);
+  if(d.error){document.getElementById("metricsTbody").innerHTML=`<tr><td colspan="14">${esc(d.error)}</td></tr>`;return;}
+  metricsTotal=d.total;
+  const tbody=document.getElementById("metricsTbody");
+  tbody.innerHTML=d.communities.map(c=>{
+    const riskDist=buildRiskDist(c);
+   const hrTag=c.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'';
+   return `<tr style="cursor:pointer" ondblclick="viewMetricsDetail(${c.community_id})" onclick="viewMetricsDetail(${c.community_id})">
+      <td><b>${c.community_id}</b> ${hrTag}</td>
+      <td>${c.device_cnt||0}</td>
+      <td>${c.flight_total_order_cnt||0}</td>
+      <td>${fmtAmt(c.flight_pay_ok_order_amount)}</td>
+      <td style="color:#E15759">${fmtAmt(c.flight_refund_amount)}</td>
+      <td style="color:#E15759;font-weight:700">${fmtAmt(c.flight_comp_total_amount)}</td>
+      <td>${((c.refund_rate||0)*100).toFixed(1)}%</td>
+      <td>${((c.comp_amount_rate||0)*100).toFixed(1)}%</td>
+      <td style="color:#E15759">${c.flight_scalper_cnt||0}</td>
+      <td style="color:#E15759">${c.flight_intercept_cnt||0}</td>
+      <td>${c.is_multi_account||0}</td>
+      <td>${c.vote_anomaly_cnt||0}/${c.vote_total||0}</td>
+      <td>${c.rule_hit_cnt||0}</td>
+      <td>${riskDist}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("metricsPageInfo").textContent=`共 ${metricsTotal} 个社区`;
+  document.getElementById("metricsPageNum").textContent=`第 ${metricsPage} 页 / 共 ${Math.ceil(metricsTotal/metricsSize)} 页`;
+  document.getElementById("metricsPrev").disabled=metricsPage<=1;
+  document.getElementById("metricsNext").disabled=metricsPage>=Math.ceil(metricsTotal/metricsSize);
+}
+
+function buildRiskDist(c){
+  let parts=[];
+  const levels=[["rl_高风险","#E15759"],["rl_中风险","#F28E2B"],["rl_疑似风险","#EDC948"],["rl_普通用户","#59A14F"],["rl_未评估","#BAB0AC"]];
+  for(const [key,color] of levels){
+    if(c[key]!==undefined&&c[key]>0){
+      parts.push(`<span style="color:${color}">${c[key]}</span>`);
+    }
+  }
+  return parts.length?parts.join(" / "):"-";
+}
+
+function fmtAmt(v){
+  if(!v)return "0";
+  if(v>=10000)return (v/10000).toFixed(1)+"万";
+  return Math.round(v).toLocaleString();
+}
+
+function changeMetricsPage(d){
+  metricsPage=Math.max(1,metricsPage+d);
+  loadMetrics();
+}
+
+async function viewMetricsDetail(commId){
+  currentMetricsCommId=commId;
+  detailPage=1;
+  document.getElementById("metricsDetail").style.display="block";
+  document.getElementById("metricsDetailCommId").textContent=commId;
+  await loadMetricsDetail();
+}
+
+async function loadMetricsDetail(){
+  if(currentMetricsCommId===null)return;
+  const d=await api(`/api/community_detail/${currentMetricsCommId}?page=${detailPage}&size=${detailSize}`);
+  if(d.error){document.getElementById("detailTbody").innerHTML=`<tr><td colspan="18">${esc(d.error)}</td></tr>`;return;}
+  detailTotal=d.total;
+  const tbody=document.getElementById("detailTbody");
+  tbody.innerHTML=d.devices.map(r=>{
+   const rlColor={"高风险":"#E15759","中风险":"#F28E2B","疑似风险":"#EDC948","普通用户":"#59A14F","未评估":"#BAB0AC"}[r.risk_level]||"#333";
+   return `<tr style="cursor:pointer" ondblclick="jumpToNodeFromDetail('${esc(r.device_id)}')">
+      <td><b>${esc(r.device_id)}</b></td>
+      <td>${r.flight_total_order_cnt||0}</td>
+      <td>${fmtAmt(r.flight_pay_ok_order_amount)}</td>
+      <td style="color:#E15759">${fmtAmt(r.flight_refund_amount)}</td>
+      <td style="color:#E15759;font-weight:700">${fmtAmt(r.flight_comp_total_amount)}</td>
+      <td>${r.flight_scalper_cnt||0}</td>
+      <td>${r.flight_intercept_cnt||0}</td>
+      <td>${r.flight_distinct_user_id_cnt||0}</td>
+      <td>${r.flight_distinct_mobile_cnt||0}</td>
+      <td>${r.flight_uid_distinct_card_num_cnt||0}</td>
+      <td>${((r.refund_rate||0)*100).toFixed(1)}%</td>
+      <td>${((r.comp_amount_rate||0)*100).toFixed(1)}%</td>
+      <td>${r.is_multi_account?"是":"否"}</td>
+      <td>${r.is_machine_refund?"是":"否"}</td>
+      <td>${r.vote_anomaly_cnt||0}/${r.vote_total||0}</td>
+      <td>${r.rule_hit_cnt||0}</td>
+      <td>${r.pseudo_label===1?"异常":r.pseudo_label===0?"正常":"未标"}</td>
+      <td style="color:${rlColor};font-weight:600">${esc(r.risk_level||"-")}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("detailPageNum").textContent=`第 ${detailPage} 页 / 共 ${Math.ceil(detailTotal/detailSize)} 页 (共${detailTotal}台设备)`;
+  document.getElementById("detailPrev").disabled=detailPage<=1;
+  document.getElementById("detailNext").disabled=detailPage>=Math.ceil(detailTotal/detailSize);
+}
+
+function jumpToNodeFromDetail(deviceId){
+  document.getElementById('nodeInput').value=deviceId;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelector('[data-tab="node"]').classList.add('active');
+  document.getElementById('panel-node').classList.add('active');
+  queryNode();
+}
+
+function changeDetailPage(d){
+  detailPage=Math.max(1,detailPage+d);
+  loadMetricsDetail();
+}
+
+// Auto-load metrics on first tab switch
+document.querySelector('[data-tab="metrics"]').addEventListener("click",()=>{if(metricsTotal===0)loadMetrics();});
 </script>
 </body>
 </html>

@@ -203,7 +203,7 @@ python tools/community_server.py
 # 浏览器自动打开 http://127.0.0.1:8766
 ```
 
-前端功能（5 个页签）:
+前端功能（6 个页签）:
 
 | 页签 | 功能 |
 |------|------|
@@ -212,6 +212,7 @@ python tools/community_server.py
 | 路径查询 | 输入任意两个值，返回 A->B 最短路径，每步标注节点类型和连接关系 |
 | 多条路径 | 返回 A->B 之间多条路径（DFS），最多 20 条 |
 | 节点查询 | 输入任意值，返回所属社区、度数、邻居列表 |
+| 社区指标 | 按 community_id 聚合 final_merged_output 的统计指标（赔付金额、退款率、异常投票等），支持排序与分页，双击社区展开设备级明细，设备行双击可跳转至节点查询 |
 
 节点类型与 Tableau 10 色系:
 
@@ -382,6 +383,58 @@ python tools/community_server.py
 ```
 
 推荐做法: 首次运行和调参时用 notebook（有 tqdm 进度条和中间输出，便于调试）；确认参数后批量跑批用 .py 命令行版。
+
+---
+
+## 八、版本管理（Git）
+
+项目已纳入 Git 版本控制，便于回退和协作。
+
+### 8.1 初始版本
+
+- **标签 v1.0**: 离线风险用户识别 + Leiden 团伙识别 + 多模型分层 + 前端可视化
+  - 42 个源码文件（notebook、.py、HTML、SQL、文档），不含数据文件
+  - .gitignore 排除 data/\*.csv / .json / .pkl / .png 和 \_\_pycache\_\_
+
+### 8.2 查看当前版本
+
+```bash
+git log --oneline          # 查看提交历史
+git tag                    # 查看所有标签
+git describe --tags        # 查看当前最近标签
+```
+
+### 8.3 回退到指定版本
+
+```bash
+# 仅查看某版本的文件内容（不改变当前工作区）
+git show v1.0:tools/community_server.py
+
+# 回退到 v1.0（保留工作区修改，仅移动 HEAD）
+git checkout v1.0
+
+# 彻底回退到 v1.0（丢弃所有修改，工作区也恢复）
+git reset --hard v1.0
+```
+
+### 8.4 发布新版本
+
+```bash
+# 1. 暂存并提交修改
+git add -A
+git commit -m "v1.1: 社区指标模块 + git 版本管理"
+
+# 2. 打标签
+git tag v1.1
+```
+
+### 8.5 后续迭代建议
+
+每次完成一个完整功能后：
+1. 确认所有 notebook 和 .py 可正常执行
+2. 确认前端页面功能正常
+3. 提交代码并打递增标签（v1.1, v1.2, ...）
+4. 在 commit message 中描述新增功能或修复的 bug
 
 ---
 

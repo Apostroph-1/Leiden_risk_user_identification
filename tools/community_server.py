@@ -11,9 +11,11 @@ API:
   GET /api/gangs?page=1&size=20    团伙列表(分页)
   GET /api/gang/<id>               团伙详情
   GET /api/gang_graph/<id>?limit=200  团伙图数据(节点+边)
-  GET /api/path?a=X&b=Y            最短路径
-  GET /api/paths?a=X&b=Y           多条路径
-  GET /api/node/<value>            查找节点所属社区
+ GET /api/path?a=X&b=Y            最短路径
+ GET /api/paths?a=X&b=Y           多条路径
+ GET /api/node/<value>            查找节点所属社区
+ GET /api/community_metrics       社区指标聚合(分页)
+ GET /api/community_detail/<id>   社区设备明细
 """
 import os, sys, json, time, argparse, webbrowser
 from collections import defaultdict, deque
@@ -51,6 +53,7 @@ class GraphEngine:
         self.node_comm = {}
         self.comm_nodes = defaultdict(list)
         self.gang_df = None
+        self.merged_df = None
         self._loaded = False
 
     def load(self):
@@ -63,7 +66,7 @@ class GraphEngine:
         adj_path   = os.path.join(self.out_dir, "graph_adjacency.json")
 
         # 1. 加载社区归属
-        print("[1/4] 加载社区归属...")
+        print("[1/5] 加载社区归属...")
         comm_df = pd.read_csv(comm_path, encoding="utf-8-sig")
         # 过滤掉 NaN community_id (被筛除的小社区)
         comm_df = comm_df[comm_df["community_id"].notna()].copy()
@@ -75,12 +78,12 @@ class GraphEngine:
         print(f"  节点 {len(comm_df)} 个, 社区 {len(self.comm_nodes)} 个")
 
         # 2. 加载团伙列表
-        print("[2/4] 加载团伙列表...")
+        print("[2/5] 加载团伙列表...")
         self.gang_df = pd.read_csv(gang_path, encoding="utf-8-sig")
         print(f"  团伙 {len(self.gang_df)} 个")
 
         # 3. 构建邻接表
-        print("[3/4] 构建邻接表...")
+        print("[3/5] 构建邻接表...")
         if os.path.exists(adj_path):
             with open(adj_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -105,7 +108,43 @@ class GraphEngine:
                     self.adj[e].add(dev)
 
         print(f"  邻接表节点 {len(self.adj)} 个")
-        print(f"[4/4] 加载完成, 耗时 {time.time()-t0:.1f}s")
+        print(f"[4/5] 加载完成, 耗时 {time.time()-t0:.1f}s")
+
+        # 5. 加载合并输出表 (社区指标聚合用)
+        merged_path = os.path.join(self.out_dir, "final_merged_output.csv")
+        if os.path.exists(merged_path):
+            print("[5/5] 加载合并输出表 (社区指标)...")
+            t1 = time.time()
+            # 只加载有社区归属的行 + 需要的列, 减少内存
+            usecols = ["device_id", "community_id",
+                       "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount",
+                       "flight_pr_total_pay", "flight_refund_amount", "flight_ticket_success_order_cnt",
+                       "flight_cancel_order_cnt", "flight_refund_order_cnt", "flight_gq_order_cnt",
+                       "flight_scalper_cnt", "flight_intercept_cnt", "flight_new_cnt",
+                       "flight_bottom_price_order_cnt", "flight_add_price_sum",
+                       "flight_voucher_sum", "flight_voucher_order_cnt",
+                       "flight_night_order_cnt", "flight_weekend_order_cnt",
+                       "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
+                       "flight_uid_distinct_card_num_cnt", "flight_distinct_ip_cnt",
+                       "flight_comp_total_amount", "flight_max_order_amount",
+                       "flight_avg_refund_pay_interval_sec", "flight_cardinality_refund_pay_time_diff",
+                       "refund_rate", "comp_amount_rate",
+                       "is_multi_account", "is_machine_refund",
+                       "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
+                       "xgb_pred", "lgb_pred", "rf_pred",
+                       "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
+                       "pseudo_label", "risk_level"]
+            # 过滤实际存在的列
+            import csv as _csv
+            with open(merged_path, "r", encoding="utf-8-sig") as _f:
+                _reader = _csv.reader(_f)
+                _header = next(_reader)
+            usecols = [c for c in usecols if c in _header]
+            self.merged_df = pd.read_csv(merged_path, usecols=usecols, encoding="utf-8-sig")
+            self.merged_df = self.merged_df[self.merged_df["community_id"] != -1].copy()
+            print(f"  合并表 {len(self.merged_df)} 行 (有社区归属), {len(usecols)} 列, 耗时 {time.time()-t1:.1f}s")
+        else:
+            print("[5/5] final_merged_output.csv 不存在, 社区指标模块不可用")
         self._loaded = True
 
     def _resolve_node(self, val):
@@ -311,6 +350,120 @@ class GraphEngine:
             "max_gang_size": int(self.gang_df["community_size"].max()),
         }
 
+    def get_community_metrics(self, page=1, size=20, sort_by="comp_total", sort_dir="desc"):
+        """按 community_id 聚合 final_merged_output 的统计指标"""
+        if self.merged_df is None:
+            return {"total": 0, "page": page, "size": size, "communities": [], "error": "final_merged_output.csv not loaded"}
+        df = self.merged_df
+        # 定义聚合规则: sum / mean / max
+        sum_cols = [c for c in [
+            "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount",
+            "flight_pr_total_pay", "flight_refund_amount", "flight_ticket_success_order_cnt",
+            "flight_cancel_order_cnt", "flight_refund_order_cnt", "flight_gq_order_cnt",
+            "flight_scalper_cnt", "flight_intercept_cnt", "flight_new_cnt",
+            "flight_bottom_price_order_cnt", "flight_add_price_sum",
+            "flight_voucher_sum", "flight_voucher_order_cnt",
+            "flight_night_order_cnt", "flight_weekend_order_cnt",
+            "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
+            "flight_uid_distinct_card_num_cnt", "flight_distinct_ip_cnt",
+            "flight_comp_total_amount", "flight_max_order_amount",
+            "flight_cardinality_refund_pay_time_diff",
+            "is_multi_account", "is_machine_refund",
+            "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
+            "xgb_pred", "lgb_pred", "rf_pred",
+           "vote_anomaly_cnt", "rule_hit_cnt", "pseudo_label",
+            "vote_total",
+       ] if c in df.columns]
+        mean_cols = [c for c in [
+            "refund_rate", "comp_amount_rate", "flight_avg_refund_pay_interval_sec",
+        ] if c in df.columns]
+        # 分组聚合
+        agg_dict = {c: "sum" for c in sum_cols}
+        agg_dict.update({c: "mean" for c in mean_cols})
+        agg_dict["device_id"] = "count"
+        result = df.groupby("community_id").agg(agg_dict).reset_index()
+        result = result.rename(columns={"device_id": "device_cnt"})
+        # 风险等级分布
+        if "risk_level" in df.columns:
+            rl = df.groupby(["community_id", "risk_level"]).size().unstack(fill_value=0)
+            for col in rl.columns:
+               result[f"rl_{col}"] = rl[col].reindex(result["community_id"]).values
+        # 合并团伙高危标记 (来自 gang_list.csv)
+        if self.gang_df is not None and "is_high_risk_gang" in self.gang_df.columns:
+            gang_info = self.gang_df[["community_id", "is_high_risk_gang"]].copy()
+            gang_info["community_id"] = gang_info["community_id"].astype(int)
+            result = result.merge(gang_info, on="community_id", how="left")
+            result["is_high_risk_gang"] = result["is_high_risk_gang"].fillna(0).astype(int)
+       # 排序
+        sort_map = {
+            "comp_total": "flight_comp_total_amount",
+            "refund": "flight_refund_amount",
+            "order_cnt": "flight_total_order_cnt",
+            "device_cnt": "device_cnt",
+            "scalper": "flight_scalper_cnt",
+            "intercept": "flight_intercept_cnt",
+        }
+        sort_col = sort_map.get(sort_by, "flight_comp_total_amount")
+        if sort_col not in result.columns:
+            sort_col = "device_cnt"
+        ascending = (sort_dir != "desc")
+        result = result.sort_values(sort_col, ascending=ascending)
+        # 分页
+        total = len(result)
+        start = (page - 1) * size
+        end = start + size
+        page_df = result.iloc[start:end]
+        # 转 dict, float 精度控制
+        records = []
+        for _, row in page_df.iterrows():
+            rec = {}
+            for k, v in row.items():
+                if pd.isna(v):
+                    rec[k] = 0
+                elif isinstance(v, float):
+                    rec[k] = round(float(v), 2)
+                else:
+                    rec[k] = int(v) if isinstance(v, (int,)) else v
+            records.append(rec)
+        return {"total": total, "page": page, "size": size, "communities": records}
+
+    def get_community_detail(self, comm_id, page=1, size=50):
+        """返回指定社区的设备明细"""
+        if self.merged_df is None:
+            return {"total": 0, "devices": [], "error": "final_merged_output.csv not loaded"}
+        comm_id = int(comm_id)
+        sub = self.merged_df[self.merged_df["community_id"] == comm_id].copy()
+        total = len(sub)
+        start = (page - 1) * size
+        end = start + size
+        page_df = sub.iloc[start:end]
+        # 选择展示列
+        display_cols = [c for c in [
+            "device_id", "community_id",
+            "flight_total_order_cnt", "flight_pay_ok_order_amount",
+            "flight_refund_amount", "flight_comp_total_amount",
+            "flight_scalper_cnt", "flight_intercept_cnt",
+            "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
+            "flight_uid_distinct_card_num_cnt",
+            "refund_rate", "comp_amount_rate",
+            "is_multi_account", "is_machine_refund",
+            "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
+            "pseudo_label", "risk_level",
+        ] if c in page_df.columns]
+        records = []
+        for _, row in page_df[display_cols].iterrows():
+            rec = {}
+            for k, v in row.items():
+                if pd.isna(v):
+                    rec[k] = 0
+                elif isinstance(v, float):
+                    rec[k] = round(float(v), 2)
+                else:
+                    rec[k] = int(v) if isinstance(v, (int,)) else v
+            records.append(rec)
+        return {"total": total, "page": page, "size": size,
+                "community_id": comm_id, "devices": records}
+
 
 engine = None
 
@@ -351,6 +504,18 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/node/"):
             value = path.split("/", 3)[-1]
             self._send_json(engine.get_node_info(value))
+        elif path == "/api/community_metrics":
+            page = int(params.get("page", ["1"])[0])
+            size = int(params.get("size", ["20"])[0])
+            sort_by = params.get("sort", ["comp_total"])[0]
+            sort_dir = params.get("dir", ["desc"])[0]
+            self._send_json(engine.get_community_metrics(page, size, sort_by, sort_dir))
+        elif path.startswith("/api/community_detail/"):
+            parts = path.split("/")
+            comm_id = parts[-1] if not parts[-1] else parts[-1]
+            page = int(params.get("page", ["1"])[0])
+            size = int(params.get("size", ["50"])[0])
+            self._send_json(engine.get_community_detail(comm_id, page, size))
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 
