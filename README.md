@@ -43,7 +43,7 @@
  
  ### 查询工具与可视化
 - `tools/community_server.py` — 团伙社区查询服务（HTTP API + BFS 路径追踪，端口 8766）
-- `tools/community_viz.html` — D3.js 力导向图前端（Tableau 10 色系，5 个功能页签）
+- `tools/community_viz.html` — D3.js 力导向图前端（Tableau 10 色系，6 个功能页签）
  
  ### Tableau
 - `tableau/README.md` — 看板配置说明
@@ -161,7 +161,7 @@ python tools/community_server.py
 # 首次启动需加载邻接表（约 10-20s），tqdm 显示进度
 ```
 
-### 前端功能（5 个页签）
+### 前端功能（6 个页签）
 
 | 页签 | 功能 |
 |------|------|
@@ -170,6 +170,7 @@ python tools/community_server.py
 | 路径查询 | 输入任意两个值（device_id / user_id / 支付索引 / 证件 / 手机），返回 A→B 最短路径，每步标注节点类型和连接关系 |
 | 多条路径 | 返回 A→B 之间多条路径（DFS），最多可配 20 条 |
 | 节点查询 | 输入任意值，返回所属社区、度数、邻居列表 |
+| 社区指标 | 按 community_id 聚合统计指标（赔付金额、退款率、异常投票、风险分布等），支持排序分页，双击社区展开设备明细，设备行双击跳转节点查询 |
 
 ### 节点命名与自动解析
 
@@ -199,6 +200,8 @@ python tools/community_server.py
 | `GET /api/path?a=X&b=Y` | 最短路径（BFS） |
 | `GET /api/paths?a=X&b=Y` | 多条路径（DFS） |
 | `GET /api/node/<value>` | 查找节点所属社区与邻居 |
+| `GET /api/community_metrics?page=1&size=20&sort=comp_total&dir=desc` | 社区指标聚合（按赔付/退款/订单量等排序） |
+| `GET /api/community_detail/<id>?page=1&size=50` | 指定社区的设备明细（分页） |
 
 ## 执行结果摘要
 
@@ -230,6 +233,38 @@ python tools/community_server.py
 4. 无正负样本时用伪标签（强规则生成）训练监督模型，AP=1.0 是预期结果
 5. Leiden 构图范围默认仅高风险设备，可改 `RISK_ONLY=False` 扩到全量
 6. 团伙查询服务的邻接表加载约需 10-20s，首次启动请耐心等待 tqdm 进度条
+
+## 版本管理（Git）
+
+项目已纳入 Git 版本控制，支持回退和协作。仓库地址：
+`https://github.com/Apostroph-1/codex_agent_workspace.git`
+
+### 当前版本
+
+| 标签 | 说明 |
+|------|------|
+| v1.0 | 离线风险用户识别 + Leiden 团伙识别 + 多模型分层 + 前端可视化 |
+| v1.1 | 社区指标模块 + git 版本管理 |
+
+### 常用命令
+
+```bash
+git log --oneline          # 查看提交历史
+git tag                    # 查看所有版本标签
+git checkout v1.0          # 回退到 v1.0（保留工作区修改）
+git reset --hard v1.0      # 彻底回退到 v1.0（丢弃所有修改）
+```
+
+### 发布新版本
+
+```bash
+git add -A
+git commit -m "v1.2: 新功能描述"
+git tag v1.2
+git push origin main --tags
+```
+
+---
 
 ## 联系
 - 数据：本人
