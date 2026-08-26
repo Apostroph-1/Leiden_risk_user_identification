@@ -133,7 +133,9 @@ class GraphEngine:
                        "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
                        "xgb_pred", "lgb_pred", "rf_pred",
                        "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
-                       "pseudo_label", "risk_level"]
+                       "pseudo_label", "risk_level",
+                       "flight_distinct_user_id", "flight_passenger_mobile_info",
+                       "flight_pay_tool_detail", "flight_pay_tool_size", "flight_uid_card_info"]
             # 过滤实际存在的列
             import csv as _csv
             with open(merged_path, "r", encoding="utf-8-sig") as _f:
@@ -427,17 +429,23 @@ class GraphEngine:
             records.append(rec)
         return {"total": total, "page": page, "size": size, "communities": records}
 
-    def get_community_detail(self, comm_id, page=1, size=50):
-        """返回指定社区的设备明细"""
+    def get_community_detail(self, comm_id, page=1, size=50, sort_by="pay_tool"):
+        """返回指定社区的设备明细，默认按支付索引个数降序"""
         if self.merged_df is None:
             return {"total": 0, "devices": [], "error": "final_merged_output.csv not loaded"}
         comm_id = int(comm_id)
         sub = self.merged_df[self.merged_df["community_id"] == comm_id].copy()
         total = len(sub)
+        # 排序: 默认按支付索引个数降序，可切换
+        sort_map = {"pay_tool": "flight_pay_tool_size", "comp": "flight_comp_total_amount",
+                    "refund": "flight_refund_amount", "order": "flight_total_order_cnt"}
+        sc = sort_map.get(sort_by, "flight_pay_tool_size")
+        if sc in sub.columns:
+            sub = sub.sort_values(sc, ascending=False)
         start = (page - 1) * size
         end = start + size
         page_df = sub.iloc[start:end]
-        # 选择展示列
+        # 选择展示列 (含下钻明细字段)
         display_cols = [c for c in [
             "device_id", "community_id",
             "flight_total_order_cnt", "flight_pay_ok_order_amount",
@@ -445,17 +453,24 @@ class GraphEngine:
             "flight_scalper_cnt", "flight_intercept_cnt",
             "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
             "flight_uid_distinct_card_num_cnt",
+            "flight_pay_tool_size",
             "refund_rate", "comp_amount_rate",
             "is_multi_account", "is_machine_refund",
             "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
             "pseudo_label", "risk_level",
+            "flight_distinct_user_id", "flight_passenger_mobile_info",
+            "flight_pay_tool_detail", "flight_uid_card_info",
         ] if c in page_df.columns]
         records = []
         for _, row in page_df[display_cols].iterrows():
             rec = {}
             for k, v in row.items():
                 if pd.isna(v):
-                    rec[k] = 0
+                    if k in ("flight_distinct_user_id", "flight_passenger_mobile_info",
+                             "flight_pay_tool_detail", "flight_uid_card_info"):
+                        rec[k] = ""
+                    else:
+                        rec[k] = 0
                 elif isinstance(v, float):
                     rec[k] = round(float(v), 2)
                 else:
@@ -463,6 +478,38 @@ class GraphEngine:
             records.append(rec)
         return {"total": total, "page": page, "size": size,
                 "community_id": comm_id, "devices": records}
+
+    def get_device_detail(self, device_id):
+        """返回指定设备的下钻明细 (userId/手机/支付索引/证件)"""
+        if self.merged_df is None:
+            return {"error": "final_merged_output.csv not loaded"}
+        sub = self.merged_df[self.merged_df["device_id"] == device_id]
+        if len(sub) == 0:
+            return {"error": f"device_id {device_id} not found"}
+        row = sub.iloc[0]
+        def parse_list(val):
+            if pd.isna(val) or not val:
+                return []
+            s = str(val).strip()
+            if s.startswith("["):
+                try:
+                    return json.loads(s)
+                except Exception:
+                    return [x.strip().strip("'\"") for x in s.strip("[]").split(",") if x.strip()]
+            return [s]
+        return {
+            "device_id": device_id,
+            "community_id": int(row.get("community_id", -1)) if not pd.isna(row.get("community_id")) else -1,
+            "risk_level": row.get("risk_level", ""),
+            "flight_distinct_user_id": parse_list(row.get("flight_distinct_user_id")),
+            "flight_passenger_mobile_info": parse_list(row.get("flight_passenger_mobile_info")),
+            "flight_pay_tool_detail": parse_list(row.get("flight_pay_tool_detail")),
+            "flight_pay_tool_size": int(row.get("flight_pay_tool_size", 0)) if not pd.isna(row.get("flight_pay_tool_size")) else 0,
+            "flight_uid_card_info": parse_list(row.get("flight_uid_card_info")),
+            "flight_distinct_user_id_cnt": int(row.get("flight_distinct_user_id_cnt", 0)) if not pd.isna(row.get("flight_distinct_user_id_cnt")) else 0,
+            "flight_distinct_mobile_cnt": int(row.get("flight_distinct_mobile_cnt", 0)) if not pd.isna(row.get("flight_distinct_mobile_cnt")) else 0,
+            "flight_uid_distinct_card_num_cnt": int(row.get("flight_uid_distinct_card_num_cnt", 0)) if not pd.isna(row.get("flight_uid_distinct_card_num_cnt")) else 0,
+        }
 
 
 engine = None
@@ -515,7 +562,11 @@ class QueryHandler(BaseHTTPRequestHandler):
             comm_id = parts[-1] if not parts[-1] else parts[-1]
             page = int(params.get("page", ["1"])[0])
             size = int(params.get("size", ["50"])[0])
-            self._send_json(engine.get_community_detail(comm_id, page, size))
+            sort_by = params.get("sort", ["pay_tool"])[0]
+            self._send_json(engine.get_community_detail(comm_id, page, size, sort_by))
+        elif path.startswith("/api/device_detail/"):
+            device_id = unquote(path.split("/", 3)[-1])
+            self._send_json(engine.get_device_detail(device_id))
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 

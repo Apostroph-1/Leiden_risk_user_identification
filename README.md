@@ -15,6 +15,8 @@
 - `docs/07_unsupervised_risk_model.md` — 无监督风险模型方案
 - `docs/08_multi_model_stratification.md` — 多模型对比 + 4 级分层
 - `docs/09_execution_results.md` — 全量执行结果报告
+- `docs/14_module_workflow_guide.md` — 模块改动手册（含 API/DB 替代离线表方案）
+- `docs/15_community_behavior_analysis.md` — 高危社区行为特征归纳分析
  
  ### SQL
 - `sql/01_offline_tables.sql` — 离线 DWD/DWS 建表与跑批（ClickHouse/Spark）
@@ -165,8 +167,8 @@ python tools/community_server.py
 
 | 页签 | 功能 |
 |------|------|
-| 团伙列表 | 分页浏览全部团伙，支持「仅看高危」筛选，显示设备/用户/支付/证件/手机分布 |
-| 社区图谱 | D3.js 力导向图，支持鼠标滚轮缩放/拖拽平移/可调画布高度，按度排序取 Top N 节点，双击节点可填入路径查询 |
+| 社区指标 | 按 community_id 聚合统计指标（赔付金额、退款率、异常投票、风险分布等），支持排序分页+社区ID搜索，点击社区展开设备明细（默认按支付索引个数降序），点击设备行下钻展示 userId/手机/支付索引/证件 明细 |
+| 社区图谱 | D3.js 力导向图，支持鼠标滚轮缩放/拖拽平移/可调画布，按度排序取 Top N 节点，双击节点可填入路径查询 |
 | 路径查询 | 输入任意两个值（device_id / user_id / 支付索引 / 证件 / 手机），返回 A→B 最短路径，每步标注节点类型和连接关系 |
 | 多条路径 | 返回 A→B 之间多条路径（DFS），最多可配 20 条 |
 | 节点查询 | 输入任意值，返回所属社区、度数、邻居列表 |
@@ -201,7 +203,8 @@ python tools/community_server.py
 | `GET /api/paths?a=X&b=Y` | 多条路径（DFS） |
 | `GET /api/node/<value>` | 查找节点所属社区与邻居 |
 | `GET /api/community_metrics?page=1&size=20&sort=comp_total&dir=desc` | 社区指标聚合（按赔付/退款/订单量等排序） |
-| `GET /api/community_detail/<id>?page=1&size=50` | 指定社区的设备明细（分页） |
+| `GET /api/community_detail/<id>?page=1&size=50&sort=pay_tool` | 指定社区的设备明细（分页，默认按支付索引降序） |
+| `GET /api/device_detail/<device_id>` | 设备下钻明细（userId/手机/支付索引/证件列表） |
 
 ## 执行结果摘要
 
@@ -237,7 +240,7 @@ python tools/community_server.py
 ## 版本管理（Git）
 
 项目已纳入 Git 版本控制，支持回退和协作。仓库地址：
-`https://github.com/Apostroph-1/codex_agent_workspace.git`
+`https://github.com/Apostroph-1/Leiden_risk_user_identification.git`
 
 ### 当前版本
 
@@ -246,6 +249,7 @@ python tools/community_server.py
 | v1.0 | 离线风险用户识别 + Leiden 团伙识别 + 多模型分层 + 前端可视化 |
 | v1.1 | 社区指标模块 + git 版本管理 |
 | v1.2 | 修复社区图谱TDZ bug + 分页跳转 + 度数说明 |
+| v1.3 | 删除团伙列表模块 + 社区指标增强(社区ID搜索+设备下钻+支付索引排序) + 高危社区行为分析 + 模块改动手册 |
 
 ### 常用命令
 

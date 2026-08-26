@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>团伙社区图谱 - 路径追踪查询</title>
+<title>风险设备社区图谱 - 路径追踪查询</title>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -60,7 +60,7 @@ svg.graph:active{cursor:grabbing}
 </head>
 <body>
 <div class="container">
-<h1>团伙社区图谱 - 路径追踪查询</h1>
+<h1>风险设备社区图谱 - 路径追踪查询</h1>
 <div class="stats-bar" id="statsBar">
 <div>节点数: <span class="stat-value" id="nodeCount">-</span></div>
 <div>社区数: <span class="stat-value" id="commCount">-</span></div>
@@ -69,15 +69,15 @@ svg.graph:active{cursor:grabbing}
 <div>最大团伙: <span class="stat-value" id="maxGangSize">-</span></div>
 </div>
 <div class="tabs">
-<div class="tab active" data-tab="gangs">团伙列表</div>
+<div class="tab active" data-tab="metrics">社区指标</div>
 <div class="tab" data-tab="graph">社区图谱</div>
 <div class="tab" data-tab="path">路径查询</div>
 <div class="tab" data-tab="multipath">多条路径</div>
 <div class="tab" data-tab="node">节点查询</div>
 <div class="tab" data-tab="metrics">社区指标</div>
 </div>
-<!-- Tab 1: Gang List -->
-<div class="panel active" id="panel-gangs">
+<!-- Tab 1: Gang List (REMOVED) -->
+<div class="panel" id="panel-gangs" style="display:none">
 <div class="filter-bar">
 <label><input type="checkbox" id="hrOnly" onchange="loadGangs()"> 仅看高危团伙</label>
 <span style="flex:1"></span>
@@ -162,9 +162,10 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" onclick="queryNode()">查询节点</button>
 <div class="result-box" id="nodeResult">等待查询...</div>
 </div>
-<!-- Tab 6: Community Metrics -->
-<div class="panel" id="panel-metrics">
+<!-- Tab 6: Community Metrics (DEFAULT) -->
+<div class="panel active" id="panel-metrics">
 <div class="filter-bar">
+<input type="number" id="metricsCommSearch" placeholder="搜索社区ID..." style="width:140px;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px" onkeydown="if(event.key==='Enter')searchCommunity()">
 <select id="metricsSort" onchange="loadMetrics()">
 <option value="comp_total">按赔付金额排序</option>
 <option value="refund">按退款金额排序</option>
@@ -172,6 +173,7 @@ svg.graph:active{cursor:grabbing}
 <option value="device_cnt">按设备数排序</option>
 <option value="scalper">按黄牛单量排序</option>
 <option value="intercept">按拦截单量排序</option>
+<option value="pay_tool">按支付索引数排序</option>
 </select>
 <select id="metricsDir" onchange="loadMetrics()">
 <option value="desc">降序</option>
@@ -194,11 +196,34 @@ svg.graph:active{cursor:grabbing}
 <input type="number" id="metricsJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpMetricsPage()">
 <button class="btn" style="padding:6px 14px" onclick="jumpMetricsPage()">GO</button>
 </div>
+<div id="deviceDrillDown" style="margin-top:16px;display:none">
+<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">设备 <span id="drillDownDeviceId"></span> 下钻明细</h3>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#F28E2B;margin-bottom:4px">关联 userId (<span id="drillDownUserCnt">0</span>)</h4>
+<div id="drillDownUsers" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#59A14F;margin-bottom:4px">支付索引明细 (<span id="drillDownPayToolCnt">0</span>)</h4>
+<div id="drillDownPayTools" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px">
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#E15759;margin-bottom:4px">乘机人证件 (<span id="drillDownCardCnt">0</span>)</h4>
+<div id="drillDownCards" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#B07AA1;margin-bottom:4px">乘机人手机 (<span id="drillDownMobileCnt">0</span>)</h4>
+<div id="drillDownMobiles" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+</div>
+</div>
 <div id="metricsDetail" style="margin-top:16px;display:none">
 <h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="metricsDetailCommId"></span> 设备明细</h3>
 <table id="detailTable" style="font-size:12px">
 <thead><tr>
-<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>退款率</th><th>赔付率</th><th>多账号</th><th>机器退款</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
+<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>多账号</th><th>机器退款</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
 </tr></thead>
 <tbody id="detailTbody"></tbody>
 </table>
@@ -419,9 +444,9 @@ async function loadMetricsDetail(){
   if(d.error){document.getElementById("detailTbody").innerHTML=`<tr><td colspan="18">${esc(d.error)}</td></tr>`;return;}
   detailTotal=d.total;
   const tbody=document.getElementById("detailTbody");
-  tbody.innerHTML=d.devices.map(r=>{
+  tbody.innerHTML=d.devices.map((r,idx)=>{
    const rlColor={"高风险":"#E15759","中风险":"#F28E2B","疑似风险":"#EDC948","普通用户":"#59A14F","未评估":"#BAB0AC"}[r.risk_level]||"#333";
-   return `<tr style="cursor:pointer" ondblclick="jumpToNodeFromDetail('${esc(r.device_id)}')">
+   return `<tr style="cursor:pointer" onclick="loadDeviceDrillDown('${esc(r.device_id)}')" ondblclick="jumpToNodeFromDetail('${esc(r.device_id)}')">
       <td><b>${esc(r.device_id)}</b></td>
       <td>${r.flight_total_order_cnt||0}</td>
       <td>${fmtAmt(r.flight_pay_ok_order_amount)}</td>
@@ -432,6 +457,7 @@ async function loadMetricsDetail(){
       <td>${r.flight_distinct_user_id_cnt||0}</td>
       <td>${r.flight_distinct_mobile_cnt||0}</td>
       <td>${r.flight_uid_distinct_card_num_cnt||0}</td>
+      <td style="font-weight:600;color:#59A14F">${r.flight_pay_tool_size||0}</td>
       <td>${((r.refund_rate||0)*100).toFixed(1)}%</td>
       <td>${((r.comp_amount_rate||0)*100).toFixed(1)}%</td>
       <td>${r.is_multi_account?"是":"否"}</td>
@@ -462,6 +488,59 @@ function changeDetailPage(d){
 }
 function jumpDetailPage(){const v=parseInt(document.getElementById("detailJumpInput").value)||1;const maxP=Math.ceil(detailTotal/detailSize);detailPage=Math.min(Math.max(1,v),maxP);loadMetricsDetail();}
 
+
+// Device drill-down
+async function loadDeviceDrillDown(deviceId) {
+  document.getElementById("deviceDrillDown").style.display = "block";
+  document.getElementById("drillDownDeviceId").textContent = deviceId;
+  document.getElementById("drillDownUsers").innerHTML = "加载中...";
+  document.getElementById("drillDownPayTools").innerHTML = "加载中...";
+  document.getElementById("drillDownCards").innerHTML = "加载中...";
+  document.getElementById("drillDownMobiles").innerHTML = "加载中...";
+  try {
+    const d = await api("/api/device_detail/" + encodeURIComponent(deviceId));
+    if (d.error) {
+      document.getElementById("drillDownUsers").innerHTML = '<span class="error">' + esc(d.error) + '</span>';
+      document.getElementById("drillDownPayTools").innerHTML = '<span class="error">' + esc(d.error) + '</span>';
+      document.getElementById("drillDownCards").innerHTML = '<span class="error">' + esc(d.error) + '</span>';
+      document.getElementById("drillDownMobiles").innerHTML = '<span class="error">' + esc(d.error) + '</span>';
+      return;
+    }
+    // userId list
+    const users = d.flight_distinct_user_id || [];
+    document.getElementById("drillDownUserCnt").textContent = users.length;
+    document.getElementById("drillDownUsers").innerHTML = users.length
+      ? users.map(u => '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #F28E2B;border-radius:4px">' + esc(u) + '</span>').join("")
+      : '<span style="color:#999">无</span>';
+    // pay tool list
+    const tools = d.flight_pay_tool_detail || [];
+    document.getElementById("drillDownPayToolCnt").textContent = tools.length;
+    document.getElementById("drillDownPayTools").innerHTML = tools.length
+      ? tools.map(t => '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #59A14F;border-radius:4px">' + esc(t) + '</span>').join("")
+      : '<span style="color:#999">无</span>';
+    // card list
+    const cards = d.flight_uid_card_info || [];
+    document.getElementById("drillDownCardCnt").textContent = cards.length;
+    document.getElementById("drillDownCards").innerHTML = cards.length
+      ? cards.map(c => '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #E15759;border-radius:4px">' + esc(c) + '</span>').join("")
+      : '<span style="color:#999">无</span>';
+    // mobile list
+    const mobiles = d.flight_passenger_mobile_info || [];
+    document.getElementById("drillDownMobileCnt").textContent = mobiles.length;
+    document.getElementById("drillDownMobiles").innerHTML = mobiles.length
+      ? mobiles.map(m => '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #B07AA1;border-radius:4px">' + esc(m) + '</span>').join("")
+      : '<span style="color:#999">无</span>';
+  } catch(e) {
+    document.getElementById("drillDownUsers").innerHTML = '<span class="error">请求失败</span>';
+  }
+}
+
+// Community ID search
+function searchCommunity() {
+  const v = parseInt(document.getElementById("metricsCommSearch").value);
+  if (isNaN(v)) { loadMetrics(); return; }
+  viewMetricsDetail(v);
+}
 
 // Auto-load metrics on first tab switch
 document.querySelector('[data-tab="metrics"]').addEventListener("click",()=>{if(metricsTotal===0)loadMetrics();});
