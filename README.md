@@ -136,6 +136,30 @@ rule_hit = 命中规则数（0-7）
 
 ## Docker 部署（跨电脑同步）
 
+> 详细指南见 [docs/16_docker_deployment.md](docs/16_docker_deployment.md)
+
+### 整体方案
+
+- 代码通过 GitHub 仓库同步（git push / git pull）
+- 运行环境通过 Docker 镜像保证一致（Python 3.11 + 所有依赖）
+- data/ 文件夹不进 git 也不进镜像，需手动拷贝（约 1.6GB）
+
+### Windows 首次配置（仅一次）
+
+1. 安装 Docker Desktop
+2. 安装 WSL2：wsl --install --no-distribution --web-download，然后重启电脑
+3. 启动 Docker Desktop，等待左下角变绿
+4. docker compose build && docker compose up
+5. 访问 http://localhost:8766
+
+### Mac mini 首次配置（仅一次）
+
+1. 安装 Docker Desktop for Mac
+2. git clone https://github.com/Apostroph-1/Leiden_risk_user_identification.git
+3. 将 data/ 文件夹拷贝到项目根目录（U盘/移动硬盘/局域网传输）
+4. docker compose build && docker compose up
+5. 访问 http://localhost:8766
+
 > 用途：在另一台电脑上用 Docker 运行同一套环境，确保两边完全一致。
 
 ### 前提
@@ -230,3 +254,4 @@ git push origin main       # 推送到远程
 ```
 
 > 注意：`data/*.csv` 和 `data/*.xlsx` 已在 `.gitignore` 中排除，不会上传原始数据。
+

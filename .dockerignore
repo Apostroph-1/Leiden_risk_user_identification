@@ -7,6 +7,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+python/
 *.db
 *.xlsx
 *.xls
@@ -16,3 +17,4 @@ venv/
 .codex/
 *.pkl
 *.png
+*.ipynb_checkpoints/
