@@ -21,7 +21,7 @@ import leidenalg
 # ---------- 路径配置 ----------
 # [TUNABLE] 修改范围: 数据/输出目录
 # 影响内容: 决定读写位置
-BASE = r"d:/Qunar_work/workbuddy_data/leiden"
+BASE = os.environ.get("LEIDEN_BASE", r"d:/Qunar_work/workbuddy_data/leiden")
 DATA = os.path.join(BASE, "data")
 OUT  = os.path.join(BASE, "data", "model_output")
 os.makedirs(OUT, exist_ok=True)

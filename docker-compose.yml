@@ -1,0 +1,37 @@
+# Leiden Risk User Identification - Docker Compose
+#
+# Quick start:
+#   1. Put your data files in ./data/ (see README for expected files)
+#   2. docker compose up
+#   3. Open http://localhost:8766 in browser
+#
+# To retrain models in Jupyter:
+#   docker compose --profile dev up jupyter
+#   Open http://localhost:8888
+
+services:
+  server:
+    build: .
+    ports:
+      - "8766:8766"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  jupyter:
+    build: .
+    profiles: ["dev"]
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./data:/app/data
+      - ./notebooks:/app/notebooks
+    environment:
+      - LEIDEN_BASE=/app
+    command: >
+      jupyter notebook
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --notebook-dir=/app/notebooks

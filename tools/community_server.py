@@ -724,17 +724,23 @@ def main():
     global engine
     parser = argparse.ArgumentParser(description="团伙社区查询服务")
     parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 for Docker")
     parser.add_argument("--data-dir", default=OUT)
+    parser.add_argument("--no-browser", action="store_true", help="skip webbrowser.open (Docker)")
     args = parser.parse_args()
 
     engine = GraphEngine(args.data_dir)
     engine.load()
 
-    server = HTTPServer(("127.0.0.1", args.port), QueryHandler)
-    url = f"http://127.0.0.1:{args.port}"
+    server = HTTPServer((args.host, args.port), QueryHandler)
+    url = f"http://{args.host}:{args.port}"
     print(f"\n查询服务启动: {url}")
     print("按 Ctrl+C 终止")
-    webbrowser.open(url)
+    if not args.no_browser:
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
     try:
         server.serve_forever()
     except KeyboardInterrupt:

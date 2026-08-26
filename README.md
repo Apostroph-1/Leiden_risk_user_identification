@@ -133,6 +133,82 @@ rule_hit = 命中规则数（0-7）
 | `GET /api/paths?a=X&b=Y` | 多跳路径（DFS） |
 | `GET /api/node/<value>` | 节点查询 |
 
+
+## Docker 部署（跨电脑同步）
+
+> 用途：在另一台电脑上用 Docker 运行同一套环境，确保两边完全一致。
+
+### 前提
+
+1. 目标电脑已安装 [Docker](https://docs.docker.com/get-docker/)
+2. 将整个项目文件夹（含 data/）拷贝到目标电脑
+
+### 方式一：docker compose（推荐）
+
+```bash
+# 1. 进入项目目录
+cd leiden
+
+# 2. 构建并启动服务
+docker compose up
+
+# 3. 浏览器访问
+# http://localhost:8766
+```
+
+### 方式二：docker run（手动）
+
+```bash
+# 构建镜像
+docker build -t leiden-risk .
+
+# 运行容器（挂载 data 目录）
+docker run -d --name leiden -p 8766:8766 -v $(pwd)/data:/app/data leiden-risk
+
+# 浏览器访问
+# http://localhost:8766
+```
+
+### 在 Docker 中重新训练模型
+
+```bash
+# 启动 Jupyter（dev profile）
+docker compose --profile dev up jupyter
+
+# 浏览器访问
+# http://localhost:8888
+# 在 notebooks/ 中打开 .ipynb 逐 cell 执行
+```
+
+### 数据文件说明
+
+Docker 镜像不包含 data/ 目录（太大）。通过 volume 挂载：
+
+```
+./data/                         -> /app/data/
+  flight_feature_detail_*.csv  -> /app/data/flight_feature_detail_*.csv  (原始宽表)
+  model_output/                 -> /app/data/model_output/                (模型输出)
+```
+
+确保 data/ 目录包含以下文件：
+
+| 文件 | 用途 | 必须有 |
+|------|------|--------|
+| flight_feature_detail_8.19-90days.csv | 原始宽表 | 训练时需要 |
+| model_output/final_merged_output.csv | 合并输出 | 前端展示需要 |
+| model_output/device_community.csv | 社区归属 | 前端展示需要 |
+| model_output/graph_adjacency.json | 邻接表 | 路径查询需要 |
+| model_output/community_analysis.csv | 高危分析 | 高危分析需要 |
+
+### Windows 注意事项
+
+Windows 下 Docker Desktop 需要在设置中开启文件共享，确保项目所在盘符已挂载。
+
+```powershell
+# Windows PowerShell
+docker compose up
+```
+
 ## 版本管理与 Git
 
 仓库地址：`https://github.com/Apostroph-1/Leiden_risk_user_identification.git`

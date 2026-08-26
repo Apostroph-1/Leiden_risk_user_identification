@@ -12,3 +12,5 @@ matplotlib>=3.7
 seaborn>=0.12
 fastapi>=0.104
 uvicorn>=0.24
+jupyter>=1.0
+nbformat>=5.9

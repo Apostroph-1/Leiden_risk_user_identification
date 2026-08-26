@@ -45,7 +45,7 @@ except Exception:
 
 # [TUNABLE] 修改范围: 数据目录/输出目录
 # 影响内容: 决定从哪里读CSV、结果写到哪
-BASE = r"d:/Qunar_work/workbuddy_data/leiden"
+BASE = os.environ.get("LEIDEN_BASE", r"d:/Qunar_work/workbuddy_data/leiden")
 DATA = os.path.join(BASE, "data")
 OUT  = os.path.join(BASE, "data", "model_output")
 os.makedirs(OUT, exist_ok=True)
