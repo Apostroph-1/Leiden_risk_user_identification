@@ -105,3 +105,47 @@
 3. **骗赔套利**（Community 15056, 19936, 9631, 12688, 2231, 572 等）：高赔付率（comp_amount_rate > 0.3），核心是利用退改签和赔付规则差价
 
 洗钱和薅羊毛在当前数据维度下无法有效识别，需要补充交易级和优惠级字段。
+
+
+## 前端展示（v1.4 新增）
+
+高危分析结果已集成到前端可视化界面的「高危分析」模块中，位于 	ools/community_viz.html。
+
+### 模块结构
+
+页面包含三个面板，形成三级下钻链路：
+
+1. **社区分析表**（第一级）
+   - 按 community_id 展示每个社区的聚合指标
+   - 列：community_id、行为类型（彩色标签）、设备数、总订单量、退款率、赔付率、赔付金额、多账号率、证件/设备
+   - 行为标签颜色：黑灰产=#E15759、黄牛=#F28E2B、骗赔=#B07AA1、薅羊毛=#59A14F、未归类=#999999
+   - 点击任意行展开该社区下的设备明细
+
+2. **设备明细表**（第二级）
+   - 展示选中社区内所有设备，按支付索引个数（flight_pay_tool_size）降序排列
+   - 列：device_id、总订单量、支付金额、退款金额、赔付金额、支付索引个数、userId个数、证件个数、风险分层
+   - 点击任意行展开该设备的深度明细
+
+3. **设备下钻面板**（第三级）
+   - 展示选中设备的关联实体明细，方便在其他系统中搜索追踪
+   - userId 列表（flight_distinct_user_id）
+   - 支付索引明细（flight_pay_tool_detail）
+   - 乘机人证件明细（flight_uid_card_info）
+   - 乘机人手机明细（flight_passenger_mobile_info）
+
+### 后端 API
+
+| 端点 | 方法 | 参数 | 说明 |
+|------|------|------|------|
+| /api/community_analysis | GET | page, size | 返回社区级聚合指标 + 行为分类标签 |
+| /api/device_detail/<device_id> | GET | page, size | 返回设备的关联实体明细（userId/支付索引/证件/手机） |
+
+### 行为分类规则
+
+| 行为类型 | 判定条件 | 颜色 |
+|----------|----------|------|
+| 黑灰产身份池 | (user_per_device > 3 OR card_per_device > 10) AND multi_account_rate > 0.3 | #E15759 |
+| 黄牛倒票 | scalper_cnt / total_order_cnt > 0.5 | #F28E2B |
+| 骗赔套利 | comp_amount_rate > 0.3 OR (refund_rate > 0.3 AND comp_amount_rate > 0.1) | #B07AA1 |
+| 薅羊毛 | voucher_sum / pay_amount > 0.05 | #59A14F |
+| 未归类 | 以上均不满足 | #999999 |
