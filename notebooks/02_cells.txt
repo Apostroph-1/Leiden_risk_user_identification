@@ -1,5 +1,5 @@
 ##MD##
-# 08 多模型分层风险分类
+# 02 多模型分层风险分类
 
 **目标**: 对 T-90d 设备级宽表（>5单设备）进行多模型集成分类，输出 4 级风险分层 + SHAP 可解释性。
 
@@ -65,8 +65,31 @@ print(f"XGBoost: {HAS_XGB}, LightGBM: {HAS_LGB}")
 ##CODE##
 print("[1/9] 加载数据")
 t0 = time.time()
-df = pd.read_csv(INPUT_CSV, nrows=SAMPLE_N, encoding="utf-8")
+# [TUNABLE] dtype=str: prevent device_id scientific notation
+# Impact: if changed to auto-detect, device_id may become 8.65E+14
+df = pd.read_csv(INPUT_CSV, nrows=SAMPLE_N, encoding="utf-8", dtype=str)
 print(f"  原始 {len(df)} 行, 耗时 {time.time()-t0:.1f}s")
+# --- 数据清洗: 去除脏值 (null/nan/None/空字符串) ---
+# [TUNABLE] 修改范围: 可增删需要清洗的脏值关键词
+# 影响内容: 清洗不干净 -> 脏值进入模型训练; 清洗过度 -> 丢失真实关联
+DIRTY_VALUES = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", "", " "}
+for col in df.columns:
+    if df[col].dtype == object:
+        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].replace({k: None for k in DIRTY_VALUES})
+        df[col] = df[col].where(df[col].notna() & (df[col].str.lower() != 'none') & (df[col].str.lower() != 'nan'), None)
+print(f"  数据清洗完成, {len(df)} 行")
+
+# --- 数值列转换: dtype=str 读入后需转回数值 ---
+# [TUNABLE] 修改范围: 增删需要数值类型的列名
+# 影响内容: 漏转某列 -> derive_features 中的除法运算报错; 多转 -> 字符串被强制转数值
+# 字符串列(device_id/实体列)保持不转
+STRING_COLS = {"device_id", "flight_distinct_user_id", "flight_distinct_username",
+    "flight_pay_tool_detail", "flight_uid_card_info", "flight_passenger_mobile_info"}
+for col in df.columns:
+    if col not in STRING_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
 df.head(3)
 ##MD##
 ## 2. 派生特征
@@ -92,9 +115,18 @@ def derive_features(df):
     df["ip_per_order"] = df["flight_distinct_ip_cnt"] / tot
     df["passenger_per_order"] = df["flight_uid_distinct_card_num_cnt"] / tot
     df["mobile_per_order"] = df["flight_uid_distinct_passenger_mobile_cnt"] / tot
-    df["is_short_refund"] = (df["flight_min_refund_pay_interval_sec"] <= 3600).astype(int)
-    df["is_machine_refund"] = ((df["flight_cardinality_refund_pay_time_diff"] == 1) & (df["flight_refund_order_cnt"] >= 5)).astype(int)
-    df["is_night_heavy"] = (df["flight_night_order_cnt"] / tot >= 0.3).astype(int)
+    # [TUNABLE] is_short_refund 分档: <=600s 强信号, 600s<x<=3600s 弱信号
+    # 影响内容: 强信号命中更少更精准, 弱信号保留宽度覆盖
+    df["is_short_refund_strong"] = (df["flight_min_refund_pay_interval_sec"] <= 600).astype(int)
+    df["is_short_refund_weak"] = ((df["flight_min_refund_pay_interval_sec"] > 600) &
+                                   (df["flight_min_refund_pay_interval_sec"] <= 3600)).astype(int)
+    # [TUNABLE] is_machine_refund: 退款单量-时间差多样性>0 且退款率>0.5
+    # 影响内容: 差值越大说明退款时间间隔重复值越多, 退款率>0.5排除正常偶发退款
+    df["is_machine_refund"] = ((df["flight_refund_order_cnt"] - df["flight_cardinality_refund_pay_time_diff"] > 0) &
+                                (df["refund_rate"] > 0.5)).astype(int)
+    # [TUNABLE] is_night_heavy: 阈值从0.3收紧到0.5 (P95)
+    # 影响内容: 阈值越大->命中越少越精准
+    df["is_night_heavy"] = (df["flight_night_order_cnt"] / tot >= 0.5).astype(int)
     df["is_multi_account"] = (df["flight_distinct_user_id_cnt"] >= 2).astype(int)
     df["is_multi_pay_tool"] = (df["flight_distinct_pay_tool_cnt"] >= 3).astype(int)
     df["is_multi_passenger"] = (df["flight_uid_distinct_card_num_cnt"] >= 5).astype(int)
@@ -126,7 +158,7 @@ FEATURE_COLS = [
     "flight_night_order_cnt", "flight_weekend_order_cnt",
     "flight_min_refund_pay_interval_sec", "flight_max_refund_pay_interval_sec",
     "flight_avg_refund_pay_interval_sec", "flight_cardinality_refund_pay_time_diff",
-    "is_short_refund", "is_machine_refund", "is_night_heavy",
+    "is_short_refund_strong", "is_short_refund_weak", "is_machine_refund", "is_night_heavy",
     "is_multi_account", "is_multi_pay_tool", "is_multi_passenger",
     "flight_comp_total_amount",
 ]
@@ -196,7 +228,7 @@ n_unk = (df["pseudo_label"] == -1).sum()
 print(f"  伪标签: 异常={n_pos}  正常={n_neg}  未标记={n_unk}")
 
 X_all = df[FEATURE_COLS].values
-rule_cols = ["is_short_refund","is_machine_refund","is_night_heavy",
+rule_cols = ["is_short_refund_strong","is_short_refund_weak","is_machine_refund","is_night_heavy",
              "is_multi_account","is_multi_pay_tool","is_multi_passenger"]
 df["rule_hit_cnt"] = df[rule_cols].sum(axis=1)
 ##MD##
@@ -300,22 +332,8 @@ if HAS_XGB:
         scale_pos_weight=pos_w, n_jobs=-1, random_state=42,
         eval_metric="aucpr", verbosity=0
     )
-    # tqdm 回调显示训练进度
-    class TqdmCallback(xgb.callback.TrainingCallback):
-        def __init__(self, n_estimators=300):
-            self.n_estimators = n_estimators
-            self.pbar = None
-        def after_iteration(self, model, epoch, evals_log):
-            if self.pbar is None:
-                self.pbar = tqdm(total=self.n_estimators, desc="  XGBoost训练")
-            self.pbar.update(1)
-            return False
-        def after_training(self, model):
-            if self.pbar:
-                self.pbar.close()
-            return model
 
-    xgb_model.fit(X_tr, y_tr, callbacks=[TqdmCallback(300)])
+    xgb_model.fit(X_tr, y_tr)
     df["xgb_prob"] = xgb_model.predict_proba(X_all)[:, 1]
     df["xgb_pred"] = (df["xgb_prob"] >= 0.5).astype(int)
     y_pred = xgb_model.predict(X_te)
@@ -504,6 +522,7 @@ out_cols += ["rf_prob", "rf_pred", "rule_hit_cnt",
              "flight_comp_total_amount", "flight_distinct_user_id_cnt",
              "flight_distinct_pay_tool_cnt", "flight_scalper_cnt",
              "flight_intercept_cnt", "refund_rate", "comp_amount_rate",
+             "is_short_refund_strong", "is_short_refund_weak",
              "is_multi_account", "is_machine_refund", "pseudo_label"]
 out_cols = [c for c in out_cols if c in df.columns]
 result = df[out_cols].copy()

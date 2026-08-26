@@ -50,12 +50,12 @@ data/
 
 ```
 data/model_output/
-  device_risk_score.csv      <- 08 产出：风险分层主表
-  exploded_edges.csv          <- 07 产出：展开边表
-  device_community.csv       <- 07 产出：节点级社区归属
-  gang_list.csv              <- 07 产出：团伙列表
-  graph_adjacency.json       <- 07 产出：邻接表（供查询服务）
-  final_merged_output.csv    <- 09 产出：合并最终输出
+  device_risk_score.csv      <- 02 产出：风险分层主表
+  exploded_edges.csv          <- 01 产出：展开边表
+  device_community.csv       <- 01 产出：节点级社区归属
+  gang_list.csv              <- 01 产出：团伙列表
+  graph_adjacency.json       <- 01 产出：邻接表（供查询服务）
+  final_merged_output.csv    <- 03 产出：合并最终输出
   xgb.pkl / lgb.pkl / rf.pkl <- 训练好的模型
   shap_summary.png           <- SHAP 图
   tree_rules.txt / .png      <- 决策树规则
@@ -68,7 +68,7 @@ data/model_output/
 ## 二、执行流程总览
 
 ```
-08 风险分类  ->  07 团伙识别  ->  09 合并输出  ->  查询可视化
+02 风险分类  ->  01 团伙识别  ->  03 合并输出  ->  查询可视化
 (notebook)      (notebook)       (notebook)       (server)
     |               |                |               |
     v               v                v               v
@@ -370,13 +370,13 @@ data/flight_feature_detail_8.19-90days.csv (原始宽表, 282MB)
 
 ```bash
 # 步骤 1: 多模型风险分类（命令行版，无 tqdm 进度条）
-"D:/Users/yubotai.gao/coding/python/python.exe" -u python/08_multi_model_stratify.py
+"D:/Users/yubotai.gao/coding/python/python.exe" -u python/notebooks/02_multi_model_stratify.ipynb
 
 # 步骤 2: Leiden 团伙识别
-"D:/Users/yubotai.gao/coding/python/python.exe" -u python/07_leiden_community.py --risk-only --min-community-size 3
+"D:/Users/yubotai.gao/coding/python/python.exe" -u python/notebooks/01_leiden_community.ipynb --risk-only --min-community-size 3
 
 # 步骤 3: 合并最终输出
-"D:/Users/yubotai.gao/coding/python/python.exe" -u python/09_merge_output.py
+"D:/Users/yubotai.gao/coding/python/python.exe" -u python/notebooks/03_merge_output.ipynb
 
 # 步骤 4: 启动查询服务
 python tools/community_server.py
@@ -533,3 +533,18 @@ SAMPLE_N = 10000  # 采样 1 万行，30 秒跑通全流程
 - community_viz.html 画布宽高双向调节和适应画布功能
 - 08 .py 的 pos_w 变量作用域问题
 - 07 .py 的 exploded_edges.csv / graph_adjacency.json 输出和社区重编号
+
+## 规则版本记录
+
+### v2 (2026-08-26)
+- is_short_refund 拆分为 strong (<=600s) + weak (600s-3600s)
+- is_machine_refund 改为 refund_cnt - cardinality > 0 AND refund_rate > 0.5
+- is_night_heavy 阈值从 0.3 收紧到 0.5
+- is_multi_account, is_multi_pay_tool, is_multi_passenger 不变
+- XGBoost 修复: 移除 callbacks 参数兼容新版
+
+### v1 (2026-08-19)
+- 初版 6 条规则
+- is_short_refund <= 3600s
+- is_machine_refund cardinality==1 AND refund>=5 (实际命中0个)
+- is_night_heavy >= 0.3

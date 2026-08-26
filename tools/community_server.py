@@ -67,7 +67,7 @@ class GraphEngine:
 
         # 1. 加载社区归属
         print("[1/5] 加载社区归属...")
-        comm_df = pd.read_csv(comm_path, encoding="utf-8-sig")
+        comm_df = pd.read_csv(comm_path, encoding="utf-8-sig", dtype=str)
         # 过滤掉 NaN community_id (被筛除的小社区)
         comm_df = comm_df[comm_df["community_id"].notna()].copy()
         comm_df["community_id"] = comm_df["community_id"].astype(int)
@@ -129,7 +129,8 @@ class GraphEngine:
                        "flight_comp_total_amount", "flight_max_order_amount",
                        "flight_avg_refund_pay_interval_sec", "flight_cardinality_refund_pay_time_diff",
                        "refund_rate", "comp_amount_rate",
-                       "is_multi_account", "is_machine_refund",
+                       "is_short_refund_strong", "is_short_refund_weak",
+            "is_multi_account", "is_machine_refund",
                        "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
                        "xgb_pred", "lgb_pred", "rf_pred",
                        "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
@@ -142,7 +143,22 @@ class GraphEngine:
                 _reader = _csv.reader(_f)
                 _header = next(_reader)
             usecols = [c for c in usecols if c in _header]
-            self.merged_df = pd.read_csv(merged_path, usecols=usecols, encoding="utf-8-sig")
+            # dtype=str prevents device_id scientific notation (8.65E+14)
+            self.merged_df = pd.read_csv(merged_path, usecols=usecols, encoding="utf-8-sig", dtype=str)
+            # Convert numeric columns back from string
+            numeric_cols = [c for c in usecols if c not in
+                ("device_id", "risk_level", "flight_distinct_user_id",
+                 "flight_passenger_mobile_info", "flight_pay_tool_detail", "flight_uid_card_info")]
+            for nc in numeric_cols:
+                if nc in self.merged_df.columns:
+                    self.merged_df[nc] = pd.to_numeric(self.merged_df[nc], errors="coerce")
+            # Clean dirty string values in entity columns
+            dirty = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", ""}
+            for sc in ("flight_distinct_user_id", "flight_passenger_mobile_info",
+                       "flight_pay_tool_detail", "flight_uid_card_info"):
+                if sc in self.merged_df.columns:
+                    self.merged_df[sc] = self.merged_df[sc].astype(str).str.strip()
+                    self.merged_df[sc] = self.merged_df[sc].replace({k: None for k in dirty})
             self.merged_df = self.merged_df[self.merged_df["community_id"] != -1].copy()
             print(f"  合并表 {len(self.merged_df)} 行 (有社区归属), {len(usecols)} 列, 耗时 {time.time()-t1:.1f}s")
         else:
@@ -370,6 +386,7 @@ class GraphEngine:
             "flight_uid_distinct_card_num_cnt", "flight_distinct_ip_cnt",
             "flight_comp_total_amount", "flight_max_order_amount",
             "flight_cardinality_refund_pay_time_diff",
+            "is_short_refund_strong", "is_short_refund_weak",
             "is_multi_account", "is_machine_refund",
             "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
             "xgb_pred", "lgb_pred", "rf_pred",
@@ -455,6 +472,7 @@ class GraphEngine:
             "flight_uid_distinct_card_num_cnt",
             "flight_pay_tool_size",
             "refund_rate", "comp_amount_rate",
+            "is_short_refund_strong", "is_short_refund_weak",
             "is_multi_account", "is_machine_refund",
             "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
             "pseudo_label", "risk_level",
@@ -529,6 +547,7 @@ class GraphEngine:
             "flight_uid_distinct_card_num_cnt", "flight_distinct_ip_cnt",
             "flight_comp_total_amount", "flight_max_order_amount",
             "flight_cardinality_refund_pay_time_diff",
+            "is_short_refund_strong", "is_short_refund_weak",
             "is_multi_account", "is_machine_refund",
             "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
             "xgb_pred", "lgb_pred", "rf_pred",

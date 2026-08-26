@@ -44,6 +44,11 @@
 
 综合风险 `is_risk_user` = 任一命中。
 
+
+### 3.1 Rule Engine v2
+
+See docs/08_multi_model_stratification.md for full table.
+
 > 阈值初版基于业务经验，模型上线后按 PR 曲线调整。
 
 ---

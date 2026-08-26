@@ -55,18 +55,38 @@
 
 ---
 
-## 四、4 级分层规则
+## 四、7 条规则定义（v2，2026-08-26 更新）
 
-`vote = 各模型判定异常的票数（0-6）`，`rule_hit = 强规则命中数`
+| 规则 | 字段 | 阈值 | 命中数 | 命中率 | 说明 |
+|---|---|---|---|---|---|
+| is_short_refund_strong | flight_min_refund_pay_interval_sec | <= 600s | - | - | 极可疑秒退，10分钟内退款 |
+| is_short_refund_weak | flight_min_refund_pay_interval_sec | 600s < x <= 3600s | - | - | 1小时内退款，弱信号 |
+| is_machine_refund | refund_cnt - cardinality > 0 AND refund_rate > 0.5 | - | - | - | 退款时间间隔重复值多+退款率>50% |
+| is_night_heavy | flight_night_order_cnt / total | >= 0.5 | - | - | 凌晨订单占比超50%（P95） |
+| is_multi_account | flight_distinct_user_id_cnt | >= 2 | 23,387 | 2.70% | 多账号关联 |
+| is_multi_pay_tool | flight_distinct_pay_tool_cnt | >= 3 | 12,466 | 1.44% | 多支付工具轮换 |
+| is_multi_passenger | flight_uid_distinct_card_num_cnt | >= 5 | 121,530 | 14.04% | 多乘机人证件 |
 
-| 级别 | 条件 | 占比预期 |
-|---|---|---|
-| **高风险** | vote ≥ 60% AND rule_hit ≥ 2 | 1-3% |
-| **中风险** | vote ≥ 2 AND rule_hit ≥ 1 | 5-10% |
-| **疑似风险** | vote ≥ 1 OR rule_hit ≥ 1 | 15-25% |
-| **普通用户** | 其余 | 60-80% |
 
-阈值可调，初版基于数据分布。
+ule_hit_cnt = 上述 7 条规则的命中总数（0-7）
+
+### 阈值调整记录
+- v1 (2026-08-19): is_short_refund <= 3600s; is_machine_refund cardinality==1 AND refund>=5; is_night_heavy >= 0.3
+- v2 (2026-08-26): is_short_refund 分档 strong/weak; is_machine_refund 改用差值+退款率; is_night_heavy 收紧到 0.5
+
+## 五、4 级分层规则
+
+ote = 各模型判定异常的票数（0-6），
+ule_hit = 强规则命中数（0-7）
+
+| 级别 | 条件 | v1 占比 | v2 占比 | 变化 |
+|---|---|---|---|---|
+| **高风险** | vote >= 60% AND rule_hit >= 2 | 3.2% (27,199) | 3.0% (25,696) | -1,503 |
+| **中风险** | vote >= 2 AND rule_hit >= 1 | 25.3% (217,375) | 23.3% (201,383) | -15,992 |
+| **疑似风险** | vote >= 1 OR rule_hit >= 1 | 59.1% (506,567) | 60.3% (522,080) | +15,513 |
+| **普通用户** | 其余 | 12.4% (106,619) | 13.4% (116,230) | +9,611 |
+
+阈值可调，当前版本基于数据分布 P50-P99 分位分析。
 
 ---
 

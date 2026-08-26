@@ -1,5 +1,5 @@
 ##MD##
-# 07 Leiden 团伙识别（重做版）
+# 01 Leiden 团伙识别（重做版）
 
 **核心改动**:
 - 将原始宽表中 1 行 1 设备对应多个 user_id / pay_tool / 乘机人证件 / 乘机人手机 **先 explode 成多行**
@@ -47,7 +47,9 @@ MIN_COMMUNITY_SIZE = 3
 ##CODE##
 print("[1/6] 加载数据")
 t0 = time.time()
-df = pd.read_csv(INPUT_CSV, encoding="utf-8")
+# [TUNABLE] dtype=str: prevent device_id scientific notation
+# Impact: if changed to auto-detect, device_id may become 8.65E+14
+df = pd.read_csv(INPUT_CSV, encoding="utf-8", dtype=str)
 print(f"  宽表 {len(df)} 行, 耗时 {time.time()-t0:.1f}s")
 
 # 加载风险评分

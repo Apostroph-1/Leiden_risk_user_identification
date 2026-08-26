@@ -1,5 +1,5 @@
 ##MD##
-# 09 合并最终输出表
+# 03 合并最终输出表
 
 **目标**: 将原始宽表 + 社区归属 + 模型打标结果合并为一张完整的 CSV，供业务方直接使用。
 
@@ -7,7 +7,7 @@
 1. `device_id` — 设备号
 2. `community_id` — Leiden 社区归属（紧跟 device_id）
 3. 原始宽表全部字段
-4. 派生特征（refund_rate / comp_amount_rate / is_multi_account / is_machine_refund）
+4. 派生特征（refund_rate / comp_amount_rate / is_short_refund_strong / is_short_refund_weak / is_multi_account / is_machine_refund）
 5. 六模型异常分数 + 打标结果
 6. 投票数 + 规则命中数
 7. `pseudo_label` — 伪标签
@@ -44,8 +44,21 @@ print("[1/4] 加载数据")
 t0 = time.time()
 
 print("  加载原始宽表...")
-df_raw = pd.read_csv(INPUT_CSV, encoding="utf-8")
+# [TUNABLE] dtype=str: prevent device_id scientific notation
+# Impact: if changed to auto-detect, device_id may become 8.65E+14
+df_raw = pd.read_csv(INPUT_CSV, encoding="utf-8", dtype=str)
 print(f"    {len(df_raw)} 行, {len(df_raw.columns)} 列, 耗时 {time.time()-t0:.1f}s")
+# --- 数据清洗: 去除脏值 (null/nan/None/空字符串) ---
+# [TUNABLE] 修改范围: 可增删需要清洗的脏值关键词
+# 影响内容: 清洗不干净 -> 脏值进入合并输出; 清洗过度 -> 丢失真实关联
+DIRTY_VALUES = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", "", " "}
+for col in df_raw.columns:
+    if df_raw[col].dtype == object:
+        df_raw[col] = df_raw[col].astype(str).str.strip()
+        df_raw[col] = df_raw[col].replace({k: None for k in DIRTY_VALUES})
+        df_raw[col] = df_raw[col].where(df_raw[col].notna() & (df_raw[col].str.lower() != 'none') & (df_raw[col].str.lower() != 'nan'), None)
+print(f"  数据清洗完成, {len(df_raw)} 行")
+
 # 去重: 同一 device_id 保留第一条（原始宽表可能因JOIN产生重复行）
 dup_cnt = df_raw["device_id"].duplicated().sum()
 if dup_cnt > 0:
@@ -65,6 +78,17 @@ t1 = time.time()
 print("  加载风险评分...")
 df_risk = pd.read_csv(RISK_CSV, encoding="utf-8-sig")
 print(f"    {len(df_risk)} 设备, {len(df_risk.columns)} 列, 耗时 {time.time()-t1:.1f}s")
+# --- 数据清洗: 去除脏值 (null/nan/None/空字符串) ---
+# [TUNABLE] 修改范围: 可增删需要清洗的脏值关键词
+# 影响内容: 清洗不干净 -> 脏值进入合并输出; 清洗过度 -> 丢失真实关联
+DIRTY_VALUES = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", "", " "}
+for col in df_raw.columns:
+    if df_raw[col].dtype == object:
+        df_raw[col] = df_raw[col].astype(str).str.strip()
+        df_raw[col] = df_raw[col].replace({k: None for k in DIRTY_VALUES})
+        df_raw[col] = df_raw[col].where(df_raw[col].notna() & (df_raw[col].str.lower() != 'none') & (df_raw[col].str.lower() != 'nan'), None)
+print(f"  数据清洗完成, {len(df_raw)} 行")
+
 # 去重: 同一 device_id 保留第一条
 risk_dup = df_risk["device_id"].duplicated().sum()
 if risk_dup > 0:
@@ -91,7 +115,8 @@ print(f"  社区匹配: {df['community_id'].notna().sum()} / {len(df)}")
 # 原始表中已有的列不重复引入
 # [TUNABLE] 需要从风险评分表追加的列（删减会影响最终表包含哪些模型结果）
 risk_new_cols = [
-    "refund_rate", "comp_amount_rate", "is_multi_account", "is_machine_refund",
+    "refund_rate", "comp_amount_rate", "is_short_refund_strong", "is_short_refund_weak",
+    "is_multi_account", "is_machine_refund",
     "iforest_score", "iforest_anomaly",
     "ocsvm_score", "ocsvm_anomaly",
     "lof_score", "lof_anomaly",
@@ -112,7 +137,8 @@ print(f"  风险匹配: {df['risk_level'].notna().sum()} / {len(df)}")
 # 填充未匹配的默认值
 df["community_id"] = df["community_id"].fillna(-1).astype(int)
 for col in ["iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
-            "xgb_pred", "lgb_pred", "rf_pred", "is_multi_account", "is_machine_refund"]:
+            "xgb_pred", "lgb_pred", "rf_pred", "is_short_refund_strong", "is_short_refund_weak",
+            "is_multi_account", "is_machine_refund"]:
     if col in df.columns:
         df[col] = df[col].fillna(0).astype(int)
 df["pseudo_label"] = df["pseudo_label"].fillna(-1).astype(int)

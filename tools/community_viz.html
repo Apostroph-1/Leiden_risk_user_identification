@@ -75,29 +75,6 @@ svg.graph:active{cursor:grabbing}
 <div class="tab" data-tab="multipath">多条路径</div>
 <div class="tab" data-tab="node">节点查询</div>
 <div class="tab" data-tab="analysis">高危分析</div>
-<div class="tab" data-tab="metrics">社区指标</div>
-</div>
-<!-- Tab 1: Gang List (REMOVED) -->
-<div class="panel" id="panel-gangs" style="display:none">
-<div class="filter-bar">
-<label><input type="checkbox" id="hrOnly" onchange="loadGangs()"> 仅看高危团伙</label>
-<span style="flex:1"></span>
-<span id="gangPageInfo" style="font-size:13px;color:#666"></span>
-</div>
-<table id="gangTable">
-<thead><tr>
-<th>社区ID</th><th>大小</th><th>设备数</th><th>用户ID</th><th>支付索引</th><th>证件</th><th>手机</th><th>高危设备</th><th>高危率</th><th>高危团伙</th><th>操作</th>
-</tr></thead>
-<tbody id="gangTbody"></tbody>
-</table>
-<div class="pagination">
-<button class="btn" id="prevPage" onclick="changePage(-1)">上一页</button>
-<span id="pageInfo" style="font-size:13px"></span>
-<button class="btn" id="nextPage" onclick="changePage(1)">下一页</button>
-<span style="margin-left:8px;font-size:13px;color:#666">跳转</span>
-<input type="number" id="gangJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpGangPage()">
-<button class="btn" style="padding:6px 14px" onclick="jumpGangPage()">GO</button>
-</div>
 </div>
 <!-- Tab 2: Community Graph -->
 <div class="panel" id="panel-graph">
@@ -166,6 +143,7 @@ svg.graph:active{cursor:grabbing}
 <!-- Tab: High-Risk Analysis -->
 <div class="panel" id="panel-analysis">
 <div class="filter-bar">
+<input type="number" id="analysisCommSearch" placeholder="输入社区ID..." style="width:140px;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px" onkeydown="if(event.key==='Enter')searchAnalysisCommunity()">
 <select id="analysisSort" onchange="loadAnalysis()">
 <option value="comp">按赔付金额排序</option>
 <option value="refund">按退款金额排序</option>
@@ -623,6 +601,13 @@ const analysisSize=20;
 let analysisDetailPage=1,analysisDetailTotal=0;
 const analysisDetailSize=50;
 let currentAnalysisCommId=null;
+
+// Community ID search for analysis tab
+function searchAnalysisCommunity() {
+  const v = parseInt(document.getElementById("analysisCommSearch").value);
+  if (isNaN(v)) { loadAnalysis(); return; }
+  viewAnalysisDetail(v);
+}
 
 async function loadAnalysis(){
   const sort=document.getElementById("analysisSort").value;
