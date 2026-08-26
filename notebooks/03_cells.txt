@@ -7,7 +7,7 @@
 1. `device_id` — 设备号
 2. `community_id` — Leiden 社区归属（紧跟 device_id）
 3. 原始宽表全部字段
-4. 派生特征（refund_rate / comp_amount_rate / is_short_refund_strong / is_short_refund_weak / is_multi_account / is_machine_refund）
+4. 派生特征（refund_rate / comp_amount_rate / is_short_refund_strong / is_short_refund_weak / is_machine_refund / is_night_heavy / is_multi_account / is_multi_pay_tool / is_multi_passenger）
 5. 六模型异常分数 + 打标结果
 6. 投票数 + 规则命中数
 7. `pseudo_label` — 伪标签
@@ -82,12 +82,12 @@ print(f"    {len(df_risk)} 设备, {len(df_risk.columns)} 列, 耗时 {time.time
 # [TUNABLE] 修改范围: 可增删需要清洗的脏值关键词
 # 影响内容: 清洗不干净 -> 脏值进入合并输出; 清洗过度 -> 丢失真实关联
 DIRTY_VALUES = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", "", " "}
-for col in df_raw.columns:
-    if df_raw[col].dtype == object:
-        df_raw[col] = df_raw[col].astype(str).str.strip()
-        df_raw[col] = df_raw[col].replace({k: None for k in DIRTY_VALUES})
-        df_raw[col] = df_raw[col].where(df_raw[col].notna() & (df_raw[col].str.lower() != 'none') & (df_raw[col].str.lower() != 'nan'), None)
-print(f"  数据清洗完成, {len(df_raw)} 行")
+for col in df_risk.columns:
+    if df_risk[col].dtype == object:
+        df_risk[col] = df_risk[col].astype(str).str.strip()
+        df_risk[col] = df_risk[col].replace({k: None for k in DIRTY_VALUES})
+        df_risk[col] = df_risk[col].where(df_risk[col].notna() & (df_risk[col].str.lower() != 'none') & (df_risk[col].str.lower() != 'nan'), None)
+print(f"  数据清洗完成, {len(df_risk)} 行")
 
 # 去重: 同一 device_id 保留第一条
 risk_dup = df_risk["device_id"].duplicated().sum()
@@ -116,7 +116,8 @@ print(f"  社区匹配: {df['community_id'].notna().sum()} / {len(df)}")
 # [TUNABLE] 需要从风险评分表追加的列（删减会影响最终表包含哪些模型结果）
 risk_new_cols = [
     "refund_rate", "comp_amount_rate", "is_short_refund_strong", "is_short_refund_weak",
-    "is_multi_account", "is_machine_refund",
+    "is_machine_refund", "is_night_heavy",
+    "is_multi_account", "is_multi_pay_tool", "is_multi_passenger",
     "iforest_score", "iforest_anomaly",
     "ocsvm_score", "ocsvm_anomaly",
     "lof_score", "lof_anomaly",
@@ -138,7 +139,8 @@ print(f"  风险匹配: {df['risk_level'].notna().sum()} / {len(df)}")
 df["community_id"] = df["community_id"].fillna(-1).astype(int)
 for col in ["iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
             "xgb_pred", "lgb_pred", "rf_pred", "is_short_refund_strong", "is_short_refund_weak",
-            "is_multi_account", "is_machine_refund"]:
+            "is_machine_refund", "is_night_heavy",
+            "is_multi_account", "is_multi_pay_tool", "is_multi_passenger"]:
     if col in df.columns:
         df[col] = df[col].fillna(0).astype(int)
 df["pseudo_label"] = df["pseudo_label"].fillna(-1).astype(int)

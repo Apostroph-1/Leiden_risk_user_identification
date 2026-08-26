@@ -108,9 +108,9 @@ ule_hit = 强规则命中数（0-7）
 ## 六、运行
 
 ```bash
-"D:/Users/yubotai.gao/coding/python/python.exe" python/08_multi_model_stratify.py
+"D:/Users/yubotai.gao/coding/python/python.exe" -m jupyter nbconvert --to notebook --execute notebooks/02_multi_model_stratify.ipynb --output 02_multi_model_stratify.ipynb --ExecutePreprocessor.timeout=1200
 # 调试样本
-"D:/Users/yubotai.gao/coding/python/python.exe" python/08_multi_model_stratify.py --sample 10000
+"D:/Users/yubotai.gao/coding/python/python.exe" -m jupyter nbconvert --to notebook --execute notebooks/02_multi_model_stratify.ipynb --output 02_multi_model_stratify.ipynb --ExecutePreprocessor.timeout=1200 --ExecutePreprocessor.timeout=60
 ```
 
 输出目录：`data/model_output/`

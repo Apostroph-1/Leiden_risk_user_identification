@@ -523,7 +523,9 @@ out_cols += ["rf_prob", "rf_pred", "rule_hit_cnt",
              "flight_distinct_pay_tool_cnt", "flight_scalper_cnt",
              "flight_intercept_cnt", "refund_rate", "comp_amount_rate",
              "is_short_refund_strong", "is_short_refund_weak",
-             "is_multi_account", "is_machine_refund", "pseudo_label"]
+             "is_machine_refund", "is_night_heavy",
+             "is_multi_account", "is_multi_pay_tool", "is_multi_passenger",
+             "pseudo_label"]
 out_cols = [c for c in out_cols if c in df.columns]
 result = df[out_cols].copy()
 
