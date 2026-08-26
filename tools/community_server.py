@@ -512,6 +512,109 @@ class GraphEngine:
         }
 
 
+    def get_community_analysis(self, page=1, size=20, sort_by="comp", sort_dir="desc"):
+        """Aggregate communities + classify behavior patterns."""
+        if self.merged_df is None:
+            return {"total": 0, "page": page, "size": size, "communities": [], "error": "final_merged_output.csv not loaded"}
+        df = self.merged_df
+        sum_cols = [c for c in [
+            "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount",
+            "flight_pr_total_pay", "flight_refund_amount", "flight_ticket_success_order_cnt",
+            "flight_cancel_order_cnt", "flight_refund_order_cnt", "flight_gq_order_cnt",
+            "flight_scalper_cnt", "flight_intercept_cnt", "flight_new_cnt",
+            "flight_bottom_price_order_cnt", "flight_add_price_sum",
+            "flight_voucher_sum", "flight_voucher_order_cnt",
+            "flight_night_order_cnt", "flight_weekend_order_cnt",
+            "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
+            "flight_uid_distinct_card_num_cnt", "flight_distinct_ip_cnt",
+            "flight_comp_total_amount", "flight_max_order_amount",
+            "flight_cardinality_refund_pay_time_diff",
+            "is_multi_account", "is_machine_refund",
+            "iforest_anomaly", "ocsvm_anomaly", "lof_anomaly",
+            "xgb_pred", "lgb_pred", "rf_pred",
+            "vote_anomaly_cnt", "rule_hit_cnt", "pseudo_label", "vote_total",
+        ] if c in df.columns]
+        mean_cols = [c for c in [
+            "refund_rate", "comp_amount_rate", "flight_avg_refund_pay_interval_sec",
+        ] if c in df.columns]
+        agg_dict = {c: "sum" for c in sum_cols}
+        agg_dict.update({c: "mean" for c in mean_cols})
+        agg_dict["device_id"] = "count"
+        result = df.groupby("community_id").agg(agg_dict).reset_index()
+        result = result.rename(columns={"device_id": "device_cnt"})
+        # Risk level distribution
+        if "risk_level" in df.columns:
+            rl = df.groupby(["community_id", "risk_level"]).size().unstack(fill_value=0)
+            for col in rl.columns:
+                result["rl_" + str(col)] = rl[col].reindex(result["community_id"]).values
+        # Classify each community
+        labels_list = []
+        for _, r in result.iterrows():
+            dc = max(r.get("device_cnt", 1), 1)
+            uc = r.get("flight_distinct_user_id_cnt", 0)
+            cc = r.get("flight_uid_distinct_card_num_cnt", 0)
+            ic = r.get("flight_distinct_ip_cnt", 0)
+            ma = r.get("is_multi_account", 0)
+            sc = r.get("flight_scalper_cnt", 0)
+            to = max(r.get("flight_total_order_cnt", 0), 1)
+            cr = r.get("comp_amount_rate", 0) or 0
+            rr = r.get("refund_rate", 0) or 0
+            ca = r.get("flight_comp_total_amount", 0) or 0
+            vs = r.get("flight_voucher_sum", 0) or 0
+            pa = r.get("flight_pay_ok_order_amount", 0) or 0
+            labels = []
+            # 1. Black/Gray industry identity pool
+            upr = uc / dc
+            cpr = cc / dc
+            mr = ma / dc
+            if (upr > 3 or cpr > 10) and mr > 0.3:
+                labels.append({"label": "黑灰产身份池", "color": "#E15759",
+                    "reason": "每设备平均%.1f个userId + %.1f个证件, 多账号率%.0f%%" % (upr, cpr, mr*100)})
+            # 2. Scalper
+            if to > 0 and sc / to > 0.5:
+                labels.append({"label": "黄牛倒票", "color": "#F28E2B",
+                    "reason": "黄牛单占比%.0f%% (%d/%d)" % (sc/to*100, sc, to)})
+            # 3. Compensation fraud
+            if cr > 0.3 or (rr > 0.3 and cr > 0.1):
+                labels.append({"label": "骗赔套利", "color": "#B07AA1",
+                    "reason": "赔付率%.0f%%, 退款率%.0f%%, 赔付金额%.0f" % (cr*100, rr*100, ca)})
+            # 4. Voucher abuse (preliminary)
+            if pa > 0 and vs / pa > 0.05:
+                labels.append({"label": "薃羊毛", "color": "#76B7B2",
+                    "reason": "代金券占支付金额%.1f%%" % (vs/pa*100)})
+            if not labels:
+                labels.append({"label": "未归类", "color": "#BAB0AC",
+                    "reason": "当前指标无法明确归类, 需补充交易级数据"})
+            labels_list.append(labels)
+        result["behavior_labels"] = labels_list
+        # Sort
+        sort_map = {"comp": "flight_comp_total_amount", "refund": "flight_refund_amount",
+                     "order": "flight_total_order_cnt", "device": "device_cnt",
+                     "scalper": "flight_scalper_cnt", "intercept": "flight_intercept_cnt"}
+        sc_col = sort_map.get(sort_by, "flight_comp_total_amount")
+        if sc_col not in result.columns:
+            sc_col = "device_cnt"
+        result = result.sort_values(sc_col, ascending=(sort_dir != "desc"))
+        total = len(result)
+        start = (page - 1) * size
+        end = start + size
+        page_df = result.iloc[start:end]
+        records = []
+        for _, row in page_df.iterrows():
+            rec = {}
+            for k, v in row.items():
+                if k == "behavior_labels":
+                    rec[k] = v
+                elif pd.isna(v):
+                    rec[k] = 0
+                elif isinstance(v, float):
+                    rec[k] = round(float(v), 2)
+                else:
+                    rec[k] = int(v) if isinstance(v, (int,)) else v
+            records.append(rec)
+        return {"total": total, "page": page, "size": size, "communities": records}
+
+
 engine = None
 
 class QueryHandler(BaseHTTPRequestHandler):
@@ -567,6 +670,12 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/device_detail/"):
             device_id = unquote(path.split("/", 3)[-1])
             self._send_json(engine.get_device_detail(device_id))
+        elif path == "/api/community_analysis":
+            page = int(params.get("page", ["1"])[0])
+            size = int(params.get("size", ["20"])[0])
+            sort_by = params.get("sort", ["comp"])[0]
+            sort_dir = params.get("dir", ["desc"])[0]
+            self._send_json(engine.get_community_analysis(page, size, sort_by, sort_dir))
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 

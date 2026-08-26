@@ -74,6 +74,7 @@ svg.graph:active{cursor:grabbing}
 <div class="tab" data-tab="path">路径查询</div>
 <div class="tab" data-tab="multipath">多条路径</div>
 <div class="tab" data-tab="node">节点查询</div>
+<div class="tab" data-tab="analysis">高危分析</div>
 <div class="tab" data-tab="metrics">社区指标</div>
 </div>
 <!-- Tab 1: Gang List (REMOVED) -->
@@ -161,6 +162,80 @@ svg.graph:active{cursor:grabbing}
 <div class="input-group"><label>输入节点值 (device_id / user_id / 支付索引 / 证件 / 手机)</label><input type="text" id="nodeInput" placeholder="输入任意值..."></div>
 <button class="btn" onclick="queryNode()">查询节点</button>
 <div class="result-box" id="nodeResult">等待查询...</div>
+</div>
+<!-- Tab: High-Risk Analysis -->
+<div class="panel" id="panel-analysis">
+<div class="filter-bar">
+<select id="analysisSort" onchange="loadAnalysis()">
+<option value="comp">按赔付金额排序</option>
+<option value="refund">按退款金额排序</option>
+<option value="order">按订单量排序</option>
+<option value="device">按设备数排序</option>
+<option value="scalper">按黄牛单量排序</option>
+<option value="intercept">按拦截单量排序</option>
+</select>
+<select id="analysisDir" onchange="loadAnalysis()">
+<option value="desc">降序</option>
+<option value="asc">升序</option>
+</select>
+<span style="flex:1"></span>
+<span id="analysisPageInfo" style="font-size:13px;color:#666"></span>
+</div>
+<div style="overflow-x:auto">
+<table id="analysisTable" style="font-size:12px">
+<thead><tr>
+<th>社区ID</th><th>行为类型</th><th>设备数</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>退款率</th><th>赔付率</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>证件数</th><th>IP数</th><th>多账号</th><th>异常投票</th><th>规则命中</th><th>判断依据</th>
+</tr></thead>
+<tbody id="analysisTbody"></tbody>
+</table>
+</div>
+<div class="pagination">
+<button class="btn" id="analysisPrev" onclick="changeAnalysisPage(-1)">上一页</button>
+<span id="analysisPageNum" style="font-size:13px"></span>
+<button class="btn" id="analysisNext" onclick="changeAnalysisPage(1)">下一页</button>
+<span style="margin-left:8px;font-size:13px;color:#666">跳转</span>
+<input type="number" id="analysisJumpInput" min="1" style="width:60px;padding:4px 8px;border:1px solid #ddd;border-radius:4px;font-size:13px" placeholder="页码" onkeydown="if(event.key==='Enter')jumpAnalysisPage()">
+<button class="btn" style="padding:6px 14px" onclick="jumpAnalysisPage()">GO</button>
+</div>
+<div id="analysisDetail" style="margin-top:16px;display:none">
+<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="analysisDetailCommId"></span> 设备明细</h3>
+<div style="overflow-x:auto">
+<table id="analysisDetailTable" style="font-size:12px">
+<thead><tr>
+<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>多账号</th><th>机器退款</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
+</tr></thead>
+<tbody id="analysisDetailTbody"></tbody>
+</table>
+</div>
+<div class="pagination">
+<button class="btn" id="analysisDetailPrev" onclick="changeAnalysisDetailPage(-1)">上一页</button>
+<span id="analysisDetailPageNum" style="font-size:13px"></span>
+<button class="btn" id="analysisDetailNext" onclick="changeAnalysisDetailPage(1)">下一页</button>
+</div>
+</div>
+<div id="analysisDrillDown" style="margin-top:16px;display:none">
+<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">设备 <span id="analysisDrillDownDeviceId"></span> 下钻明细</h3>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#F28E2B;margin-bottom:4px">关联 userId (<span id="analysisDrillDownUserCnt">0</span>)</h4>
+<div id="analysisDrillDownUsers" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#59A14F;margin-bottom:4px">支付索引明细 (<span id="analysisDrillDownPayToolCnt">0</span>)</h4>
+<div id="analysisDrillDownPayTools" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px">
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#E15759;margin-bottom:4px">乘机人证件 (<span id="analysisDrillDownCardCnt">0</span>)</h4>
+<div id="analysisDrillDownCards" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+<div style="flex:1;min-width:300px">
+<h4 style="font-size:13px;color:#B07AA1;margin-bottom:4px">乘机人手机 (<span id="analysisDrillDownMobileCnt">0</span>)</h4>
+<div id="analysisDrillDownMobiles" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
+</div>
+</div>
+</div>
 </div>
 <!-- Tab 6: Community Metrics (DEFAULT) -->
 <div class="panel active" id="panel-metrics">
@@ -542,6 +617,135 @@ function searchCommunity() {
   viewMetricsDetail(v);
 }
 
+// High-risk community analysis
+let analysisPage=1,analysisTotal=0;
+const analysisSize=20;
+let analysisDetailPage=1,analysisDetailTotal=0;
+const analysisDetailSize=50;
+let currentAnalysisCommId=null;
+
+async function loadAnalysis(){
+  const sort=document.getElementById("analysisSort").value;
+  const dir=document.getElementById("analysisDir").value;
+  const d=await api("/api/community_analysis?page="+analysisPage+"&size="+analysisSize+"&sort="+sort+"&dir="+dir);
+  if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="18">'+esc(d.error)+'</td></tr>';return;}
+  analysisTotal=d.total;
+  const tbody=document.getElementById("analysisTbody");
+  tbody.innerHTML=d.communities.map(c=>{
+    const badges=(c.behavior_labels||[]).map(l=>'<span class="tag" style="background:'+l.color+';margin:2px">'+esc(l.label)+'</span>').join(" ");
+    const reasons=(c.behavior_labels||[]).map(l=>'<div style="font-size:11px;color:#666">'+esc(l.reason)+'</div>').join("");
+    const hrTag=c.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'';
+    return '<tr style="cursor:pointer" onclick="viewAnalysisDetail('+c.community_id+')">'
+      +'<td><b>'+c.community_id+'</b> '+hrTag+'</td>'
+      +'<td>'+badges+'</td>'
+      +'<td>'+(c.device_cnt||0)+'</td>'
+      +'<td>'+(c.flight_total_order_cnt||0)+'</td>'
+      +'<td>'+fmtAmt(c.flight_pay_ok_order_amount)+'</td>'
+      +'<td style="color:#E15759">'+fmtAmt(c.flight_refund_amount)+'</td>'
+      +'<td style="color:#E15759;font-weight:700">'+fmtAmt(c.flight_comp_total_amount)+'</td>'
+      +'<td>'+((c.refund_rate||0)*100).toFixed(1)+'%</td>'
+      +'<td>'+((c.comp_amount_rate||0)*100).toFixed(1)+'%</td>'
+      +'<td style="color:#E15759">'+(c.flight_scalper_cnt||0)+'</td>'
+      +'<td style="color:#E15759">'+(c.flight_intercept_cnt||0)+'</td>'
+      +'<td>'+(c.flight_distinct_user_id_cnt||0)+'</td>'
+      +'<td>'+(c.flight_uid_distinct_card_num_cnt||0)+'</td>'
+      +'<td>'+(c.flight_distinct_ip_cnt||0)+'</td>'
+      +'<td>'+(c.is_multi_account||0)+'</td>'
+      +'<td>'+(c.vote_anomaly_cnt||0)+'/'+(c.vote_total||0)+'</td>'
+      +'<td>'+(c.rule_hit_cnt||0)+'</td>'
+      +'<td style="font-size:11px">'+reasons+'</td>'
+      +'</tr>';
+  }).join("");
+  document.getElementById("analysisPageInfo").textContent='共 '+analysisTotal+' 个社区';
+  document.getElementById("analysisPageNum").textContent='第 '+analysisPage+' 页 / 共 '+Math.ceil(analysisTotal/analysisSize)+' 页';
+  document.getElementById("analysisPrev").disabled=analysisPage<=1;
+  document.getElementById("analysisNext").disabled=analysisPage>=Math.ceil(analysisTotal/analysisSize);
+}
+
+function changeAnalysisPage(d){analysisPage=Math.max(1,analysisPage+d);loadAnalysis();}
+function jumpAnalysisPage(){const v=parseInt(document.getElementById("analysisJumpInput").value)||1;const maxP=Math.ceil(analysisTotal/analysisSize);analysisPage=Math.min(Math.max(1,v),maxP);loadAnalysis();}
+
+async function viewAnalysisDetail(commId){
+  currentAnalysisCommId=commId;
+  analysisDetailPage=1;
+  document.getElementById("analysisDetail").style.display="block";
+  document.getElementById("analysisDrillDown").style.display="none";
+  document.getElementById("analysisDetailCommId").textContent=commId;
+  await loadAnalysisDetail();
+  document.getElementById("analysisDetail").scrollIntoView({behavior:"smooth"});
+}
+
+async function loadAnalysisDetail(){
+  if(currentAnalysisCommId===null)return;
+  const d=await api("/api/community_detail/"+currentAnalysisCommId+"?page="+analysisDetailPage+"&size="+analysisDetailSize+"&sort=pay_tool");
+  if(d.error){document.getElementById("analysisDetailTbody").innerHTML='<tr><td colspan="19">'+esc(d.error)+'</td></tr>';return;}
+  analysisDetailTotal=d.total;
+  const tbody=document.getElementById("analysisDetailTbody");
+  tbody.innerHTML=d.devices.map(r=>{
+    const rlColor={"高风险":"#E15759","中风险":"#F28E2B","疑似风险":"#EDC948","普通用户":"#59A14F","未评估":"#BAB0AC"}[r.risk_level]||"#333";
+    return '<tr style="cursor:pointer" onclick="loadAnalysisDeviceDrillDown(\''+esc(r.device_id)+'\')" ondblclick="jumpToNodeFromDetail(\''+esc(r.device_id)+'\')">'
+      +'<td><b>'+esc(r.device_id)+'</b></td>'
+      +'<td>'+(r.flight_total_order_cnt||0)+'</td>'
+      +'<td>'+fmtAmt(r.flight_pay_ok_order_amount)+'</td>'
+      +'<td style="color:#E15759">'+fmtAmt(r.flight_refund_amount)+'</td>'
+      +'<td style="color:#E15759;font-weight:700">'+fmtAmt(r.flight_comp_total_amount)+'</td>'
+      +'<td>'+(r.flight_scalper_cnt||0)+'</td>'
+      +'<td>'+(r.flight_intercept_cnt||0)+'</td>'
+      +'<td>'+(r.flight_distinct_user_id_cnt||0)+'</td>'
+      +'<td>'+(r.flight_distinct_mobile_cnt||0)+'</td>'
+      +'<td>'+(r.flight_uid_distinct_card_num_cnt||0)+'</td>'
+      +'<td style="font-weight:600;color:#59A14F">'+(r.flight_pay_tool_size||0)+'</td>'
+      +'<td>'+((r.refund_rate||0)*100).toFixed(1)+'%</td>'
+      +'<td>'+((r.comp_amount_rate||0)*100).toFixed(1)+'%</td>'
+      +'<td>'+(r.is_multi_account?"是":"否")+'</td>'
+      +'<td>'+(r.is_machine_refund?"是":"否")+'</td>'
+      +'<td>'+(r.vote_anomaly_cnt||0)+'/'+(r.vote_total||0)+'</td>'
+      +'<td>'+(r.rule_hit_cnt||0)+'</td>'
+      +'<td>'+(r.pseudo_label===1?"异常":r.pseudo_label===0?"正常":"未标")+'</td>'
+      +'<td style="color:'+rlColor+';font-weight:600">'+esc(r.risk_level||"-")+'</td>'
+      +'</tr>';
+  }).join("");
+  document.getElementById("analysisDetailPageNum").textContent='第 '+analysisDetailPage+' 页 / 共 '+Math.ceil(analysisDetailTotal/analysisDetailSize)+' 页 (共'+analysisDetailTotal+'台设备)';
+  document.getElementById("analysisDetailPrev").disabled=analysisDetailPage<=1;
+  document.getElementById("analysisDetailNext").disabled=analysisDetailPage>=Math.ceil(analysisDetailTotal/analysisDetailSize);
+}
+
+async function loadAnalysisDeviceDrillDown(deviceId){
+  document.getElementById("analysisDrillDown").style.display="block";
+  document.getElementById("analysisDrillDownDeviceId").textContent=deviceId;
+  ["Users","PayTools","Cards","Mobiles"].forEach(function(s){
+    document.getElementById("analysisDrillDown"+s).innerHTML="加载中...";
+  });
+  try{
+    const d=await api("/api/device_detail/"+encodeURIComponent(deviceId));
+    if(d.error){
+      ["Users","PayTools","Cards","Mobiles"].forEach(function(s){
+        document.getElementById("analysisDrillDown"+s).innerHTML='<span class="error">'+esc(d.error)+'</span>';
+      });
+      return;
+    }
+    var users=d.flight_distinct_user_id||[];
+    document.getElementById("analysisDrillDownUserCnt").textContent=users.length;
+    document.getElementById("analysisDrillDownUsers").innerHTML=users.length?users.map(function(u){return '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #F28E2B;border-radius:4px">'+esc(u)+'</span>'}).join(""):'<span style="color:#999">无</span>';
+    var tools=d.flight_pay_tool_detail||[];
+    document.getElementById("analysisDrillDownPayToolCnt").textContent=tools.length;
+    document.getElementById("analysisDrillDownPayTools").innerHTML=tools.length?tools.map(function(t){return '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #59A14F;border-radius:4px">'+esc(t)+'</span>'}).join(""):'<span style="color:#999">无</span>';
+    var cards=d.flight_uid_card_info||[];
+    document.getElementById("analysisDrillDownCardCnt").textContent=cards.length;
+    document.getElementById("analysisDrillDownCards").innerHTML=cards.length?cards.map(function(c){return '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #E15759;border-radius:4px">'+esc(c)+'</span>'}).join(""):'<span style="color:#999">无</span>';
+    var mobiles=d.flight_passenger_mobile_info||[];
+    document.getElementById("analysisDrillDownMobileCnt").textContent=mobiles.length;
+    document.getElementById("analysisDrillDownMobiles").innerHTML=mobiles.length?mobiles.map(function(m){return '<span style="display:inline-block;margin:2px;padding:2px 6px;background:#fff;border:1px solid #B07AA1;border-radius:4px">'+esc(m)+'</span>'}).join(""):'<span style="color:#999">无</span>';
+  }catch(e){
+    document.getElementById("analysisDrillDownUsers").innerHTML='<span class="error">请求失败</span>';
+  }
+}
+
+function changeAnalysisDetailPage(d){analysisDetailPage=Math.max(1,analysisDetailPage+d);loadAnalysisDetail();}
+
+// Auto-load on tab switch
+// Auto-load on tab switch
+document.querySelector('[data-tab="analysis"]').addEventListener("click",function(){if(analysisTotal===0)loadAnalysis();});
 // Auto-load metrics on first tab switch
 document.querySelector('[data-tab="metrics"]').addEventListener("click",()=>{if(metricsTotal===0)loadMetrics();});
 </script>
