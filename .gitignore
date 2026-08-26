@@ -1,27 +1,15 @@
-# Data files (large, not version controlled)
-data/**/*.csv
-data/**/*.json
-data/**/*.pkl
-data/**/*.png
-data/**/*.txt
-data/**/*.xlsx
-
-# Python
 __pycache__/
 *.pyc
-*.pyo
-.ipynb_checkpoints/
-
-# OS
-Thumbs.db
-.DS_Store
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# Temp
-*_dump*.py
-fix_viz.py
-verify_viz.py
+*.egg-info/
+.venv/
+venv/
+data/*.csv
+data/model_output/*.csv
+data/model_output/*.pkl
+data/model_output/*.png
+data/model_output/*.txt
+*.png
+.env
+data/*.xlsx 
+data/*.xls 
+*.db 
