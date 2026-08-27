@@ -95,6 +95,37 @@ docker compose up -d
 ### 5. 验证
 打开 http://localhost:8766
 
+## MySQL 服务（明细数据存储）
+
+docker-compose.yml 内置了 `mysql` 服务（MySQL 8.0，utf8mb4），用于存储线上导出的
+订单事件明细，供后续序列建模（SynchroTrap / N-Gram / 序列图片化）使用。
+
+### 连接方式
+
+| 方式 | 命令/配置 |
+|------|-----------|
+| 容器内命令行 | `docker compose exec mysql mysql -uroot -p leiden` |
+| 单命令查询 | `docker compose exec mysql mysql -uroot -p leiden -e "SELECT ..."` |
+| 图形客户端 | Navicat / DBeaver / VSCode Database Client，填 127.0.0.1:3306 |
+
+### 密码管理（不写进任何文件）
+
+- 密码存放在项目根目录 `.env` 文件（已被 .gitignore 排除，不进 git）：
+  `MYSQL_ROOT_PASSWORD=<密码>`
+- 首次启动前先创建 .env，再 `docker compose up -d`
+- 忘记密码时重置：进容器 `ALTER USER 'root'@'%' IDENTIFIED BY '<新密码>'; FLUSH PRIVILEGES;`
+
+### 数据持久化
+
+- 数据文件挂载在 `./data/mysql`（不进 git，不进镜像）
+- 删除容器数据不丢；彻底重置：`docker compose down` 后删除 `data/mysql` 目录
+
+### 与建模的衔接
+
+线上按半月分批导出的事件明细 CSV 放 `data/detail/`，用 pandas（dtype=str）
+读入后 `to_sql` 写入 MySQL（表 `device_order_event`，按月分区），建模时
+pandas `read_sql` 或 SQL 预聚合后读取。
+
 ## 常用命令
 
 | 操作 | 命令 |

@@ -8,8 +8,36 @@
 # To retrain models in Jupyter:
 #   docker compose --profile dev up jupyter
 #   Open http://localhost:8888
+#
+# MySQL (明细数据存储，建模用):
+#   docker compose up -d
+#   host=127.0.0.1 port=3306 user=root db=leiden
+#   密码不写在文件里：首次启动前在项目根目录建 .env 文件写入
+#     MYSQL_ROOT_PASSWORD=<你的密码>
+#   已初始化过的容器改密码用：docker compose exec mysql mysql -uroot -p -e "ALTER USER 'root'@'%' IDENTIFIED BY '<新密码>'; FLUSH PRIVILEGES;"
+#   数据持久化在 ./data/mysql（不进 git）
 
 services:
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=leiden
+      # 中文数据必须 utf8mb4
+      - MYSQL_CHARSET=utf8mb4
+      - MYSQL_COLLATION=utf8mb4_unicode_ci
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   server:
     build: .
     ports:
@@ -18,6 +46,9 @@ services:
       - ./data:/app/data
       # 开发调试：tools 目录实时同步，改 server/前端代码后只需 docker compose restart
       - ./tools:/app/tools
+    depends_on:
+      mysql:
+        condition: service_healthy
     restart: unless-stopped
 
   jupyter:

@@ -215,6 +215,9 @@ Docker 镜像不包含 data/ 目录（太大）。通过 volume 挂载：
 ./tools/                        -> /app/tools/   (v2.5 起挂载，改代码免 rebuild)
 ```
 
+> v2.6 起 compose 内置 MySQL 8.0 服务（存储建模明细数据，见 docs/16_docker_deployment.md），
+> 密码放在根目录 `.env`（已被 .gitignore 排除）。
+
 > v2.5 起 `docker-compose.yml` 的 server 服务同时挂载了 `./tools`，修改
 > `tools/community_server.py` 或 `tools/community_viz.html` 后只需
 > `docker compose restart`，无需重新构建镜像。
@@ -255,6 +258,7 @@ docker compose up
 | v2.0 | 7 规则引擎 + 6 模型投票 + Leiden 社群识别 + 前端可视化 |
 | v2.1 | 修复 3 条缺失规则列 + 数据清洗 + 文档更新 |
 | v2.5 | server 服务挂载 ./tools，改前端/API 代码免 rebuild（restart 即可） |
+| v2.6 | 新增 MySQL 8.0 服务（明细数据存储，密码走 .env 不进 git）；重写 sql/ 为纯线上取数 SQL（无本地建表） |
 
 ### 常用命令
 
