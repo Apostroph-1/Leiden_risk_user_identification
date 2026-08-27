@@ -233,6 +233,12 @@ Windows 下 Docker Desktop 需要在设置中开启文件共享，确保项目�
 docker compose up
 ```
 
+## Agent 操作协议
+
+> 接手此项目的 AI agent 必读以下两个文档：
+> - [docs/17_agent_handoff_SOP.md](docs/17_agent_handoff_SOP.md) -- 项目全貌、架构、数据流、关键文件
+> - [docs/18_agent_operating_protocol.md](docs/18_agent_operating_protocol.md) -- 操作约束、踩坑清单、每次修改的完整流程
+
 ## 版本管理与 Git
 
 仓库地址：`https://github.com/Apostroph-1/Leiden_risk_user_identification.git`
@@ -254,4 +260,5 @@ git push origin main       # 推送到远程
 ```
 
 > 注意：`data/*.csv` 和 `data/*.xlsx` 已在 `.gitignore` 中排除，不会上传原始数据。
+
 
