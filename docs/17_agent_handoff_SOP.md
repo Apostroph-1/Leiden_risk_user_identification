@@ -90,7 +90,7 @@ community_viz.html (D3.js)     -- 前端可视化（6 个页签）
 | 文件 | 作用 |
 |------|------|
 | Dockerfile | Docker 镜像构建（Python 3.11-slim 基础） |
-| docker-compose.yml | 服务编排（server + 可选 jupyter） |
+| docker-compose.yml | 服务编排（server + 可选 jupyter） | v2.5 起 server 挂载 ./tools，改 tools 下代码 restart 即可生效 |
 | .dockerignore | Docker 构建排除（data/ 不进镜像） |
 | .gitignore | Git 排除（data/*.csv, data/*.xlsx 不提交） |
 | requirements.txt | Python 依赖清单 |
@@ -190,9 +190,11 @@ otebooks/XX_cells.txt（源码）
 
 ### 修改前端服务
 
-1. 编辑 	ools/community_server.py（API 逻辑）
-2. 编辑 	ools/community_viz.html（前端界面）
+1. 编辑 tools/community_server.py（API 逻辑）
+2. 编辑 tools/community_viz.html（前端界面）
 3. 重启服务：docker compose restart 或 python tools/community_server.py
+
+> v2.5 起 tools/ 已挂载进容器，改这两个文件后 restart 即可生效，无需 rebuild。
 
 ### 修改规则或模型参数
 

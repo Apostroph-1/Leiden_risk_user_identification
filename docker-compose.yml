@@ -16,6 +16,8 @@ services:
       - "8766:8766"
     volumes:
       - ./data:/app/data
+      # 开发调试：tools 目录实时同步，改 server/前端代码后只需 docker compose restart
+      - ./tools:/app/tools
     restart: unless-stopped
 
   jupyter:

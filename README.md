@@ -212,7 +212,12 @@ Docker 镜像不包含 data/ 目录（太大）。通过 volume 挂载：
 ./data/                         -> /app/data/
   flight_feature_detail_*.csv  -> /app/data/flight_feature_detail_*.csv  (原始宽表)
   model_output/                 -> /app/data/model_output/                (模型输出)
+./tools/                        -> /app/tools/   (v2.5 起挂载，改代码免 rebuild)
 ```
+
+> v2.5 起 `docker-compose.yml` 的 server 服务同时挂载了 `./tools`，修改
+> `tools/community_server.py` 或 `tools/community_viz.html` 后只需
+> `docker compose restart`，无需重新构建镜像。
 
 确保 data/ 目录包含以下文件：
 
@@ -249,6 +254,7 @@ docker compose up
 |------|------|
 | v2.0 | 7 规则引擎 + 6 模型投票 + Leiden 社群识别 + 前端可视化 |
 | v2.1 | 修复 3 条缺失规则列 + 数据清洗 + 文档更新 |
+| v2.5 | server 服务挂载 ./tools，改前端/API 代码免 rebuild（restart 即可） |
 
 ### 常用命令
 

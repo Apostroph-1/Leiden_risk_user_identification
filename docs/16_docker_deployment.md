@@ -108,17 +108,27 @@ docker compose up -d
 
 ## 日常同步
 
-### Windows 改代码后
-`powershell
-git add -A; git commit -m "描述"; git push
-docker compose build; docker compose up -d
-`
+> v2.5 起 server 服务挂载了 ./tools 目录（见 docker-compose.yml），改 tools/ 下的代码
+> （community_server.py、community_viz.html）后**无需重新 build**，只需
+> `docker compose restart` 即可生效。改 notebooks/ 或依赖仍需 rebuild。
 
-### Mac mini 拉取更新
-`ash
-git pull
+### Windows 改代码后
+```powershell
+git add -A; git commit -m "描述"; git push
+# 只改了 tools/ 下的文件：
+docker compose restart
+# 改了 notebooks/、Dockerfile、requirements.txt：
 docker compose build; docker compose up -d
-`
+```
+
+### Mac 拉取更新
+```bash
+git pull
+# 只改了 tools/ 下的文件：
+docker compose restart
+# 改了 notebooks/、Dockerfile、requirements.txt：
+docker compose build; docker compose up -d
+```
 
 ## 常见问题
 
