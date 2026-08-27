@@ -99,7 +99,7 @@ community_viz.html (D3.js)     -- 前端可视化（6 个页签）
 
 | 文件 | 大小 | 用途 |
 |------|------|------|
-| data/flight_feature_detail_8.19-90days.csv | 269MB | 原始宽表（865K 设备，84 列） |
+| data/26.08.27_base.csv | 271MB | 原始宽表（735K 设备，56 列，2026-08-27 重导出修复科学计数法） |
 | data/test.xlsx | 699MB | 测试数据 |
 | data/model_output/device_risk_score.csv | 174MB | 6 模型 + 7 规则输出 |
 | data/model_output/final_merged_output.csv | 402MB | 合并输出（857K 行 x 84 列） |

@@ -21,14 +21,16 @@ import leidenalg
 # ---------- 路径配置 ----------
 # [TUNABLE] 修改范围: 数据/输出目录
 # 影响内容: 决定读写位置
-BASE = os.environ.get("LEIDEN_BASE", r"d:/Qunar_work/workbuddy_data/leiden")
+# 相对路径：代码目录(notebooks)上一级即项目根目录，data 在根目录下
+# 兼容 LEIDEN_BASE 环境变量覆盖（Docker 内为 /app）
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
 DATA = os.path.join(BASE, "data")
 OUT  = os.path.join(BASE, "data", "model_output")
 os.makedirs(OUT, exist_ok=True)
 
 # [TUNABLE] 输入宽表文件名
 # 影响内容: 切换不同时间窗口数据
-INPUT_CSV = os.path.join(DATA, "flight_feature_detail_8.19-90days.csv")
+INPUT_CSV = os.path.join(DATA, "26.08.27_base.csv")
 
 # [TUNABLE] 风险评分文件
 # 影响内容: 上一步(08 notebook)产出的风险分层结果
@@ -77,12 +79,14 @@ def parse_array(s):
         # 兼容非标准 JSON
         return [x.strip().strip('"').strip("'") for x in str(s).strip("[]").split(",") if x.strip()]
 
-# 测试解析
+# 测试解析（对新数据缺失的列做存在性判断，避免 KeyError）
 sample = df.iloc[0]
-print(f"  user_id: {parse_array(sample['flight_distinct_user_id'])[:3]}")
-print(f"  pay_tool: {parse_array(sample['flight_pay_tool_detail'])[:3]}")
-print(f"  card:    {parse_array(sample['flight_uid_card_info'])[:3]}")
-print(f"  mobile:  {parse_array(sample['flight_passenger_mobile_info'])[:3]}")
+for col in ["flight_distinct_user_id", "flight_pay_tool_detail",
+            "flight_uid_card_info", "flight_passenger_mobile_info"]:
+    if col in df.columns and pd.notna(sample.get(col)):
+        print(f"  {col}: {parse_array(sample[col])[:3]}")
+    else:
+        print(f"  {col}: <列缺失或值为空，构图时自动跳过该实体类型>")
 ##MD##
 ## 3. Explode 多值列
 将 1 行 1 设备对应多个实体的情况，**explode 成多行**，每行一个 (device_id, entity_value) 对。

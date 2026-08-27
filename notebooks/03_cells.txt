@@ -19,12 +19,14 @@ import pandas as pd
 from tqdm import tqdm
 
 # [TUNABLE] 修改范围: 数据/输出目录
-BASE   = os.environ.get("LEIDEN_BASE", r"d:/Qunar_work/workbuddy_data/leiden")
+# 相对路径：代码目录(notebooks)上一级即项目根目录，data 在根目录下
+# 兼容 LEIDEN_BASE 环境变量覆盖（Docker 内为 /app）
+BASE   = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
 DATA   = os.path.join(BASE, "data")
 OUTPUT = os.path.join(DATA, "model_output")
 
 # [TUNABLE] 输入文件名
-INPUT_CSV    = os.path.join(DATA, "flight_feature_detail_8.19-90days.csv")
+INPUT_CSV    = os.path.join(DATA, "26.08.27_base.csv")
 COMM_CSV     = os.path.join(OUTPUT, "device_community.csv")
 RISK_CSV     = os.path.join(OUTPUT, "device_risk_score.csv")
 # [TUNABLE] 输出文件名

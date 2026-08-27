@@ -70,7 +70,8 @@ class GraphEngine:
         comm_df = pd.read_csv(comm_path, encoding="utf-8-sig", dtype=str)
         # 过滤掉 NaN community_id (被筛除的小社区)
         comm_df = comm_df[comm_df["community_id"].notna()].copy()
-        comm_df["community_id"] = comm_df["community_id"].astype(int)
+        # 先转 float 再转 int，兼容 "6.0" 这类字符串（dtype=str 读入时常见）
+        comm_df["community_id"] = comm_df["community_id"].astype(float).astype(int)
         for _, row in tqdm(comm_df.iterrows(), total=len(comm_df), desc="  社区映射"):
             self.node_type[row["node"]] = row["node_type"]
             self.node_comm[row["node"]] = int(row["community_id"])
@@ -410,7 +411,8 @@ class GraphEngine:
         # 合并团伙高危标记 (来自 gang_list.csv)
         if self.gang_df is not None and "is_high_risk_gang" in self.gang_df.columns:
             gang_info = self.gang_df[["community_id", "is_high_risk_gang"]].copy()
-            gang_info["community_id"] = gang_info["community_id"].astype(int)
+            # float 中转兼容 "6.0" 字符串
+            gang_info["community_id"] = gang_info["community_id"].astype(float).astype(int)
             result = result.merge(gang_info, on="community_id", how="left")
             result["is_high_risk_gang"] = result["is_high_risk_gang"].fillna(0).astype(int)
        # 排序
