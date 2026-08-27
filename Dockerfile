@@ -27,7 +27,6 @@ COPY docs/ docs/
 COPY sql/ sql/
 COPY tableau/ tableau/
 COPY README.md ./
-COPY .gitignore ./
 
 # Data directory will be mounted as volume
 # - data/flight_feature_detail_8.19-90days.csv  (raw input, 269MB)
@@ -39,3 +38,4 @@ EXPOSE 8766
 
 # Run community server with Docker-friendly settings
 CMD ["python", "tools/community_server.py", "--host", "0.0.0.0", "--port", "8766", "--no-browser"]
+
