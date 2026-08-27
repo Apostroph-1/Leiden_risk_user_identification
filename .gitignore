@@ -7,3 +7,4 @@ data/
 *.png
 .env
 *.db
+.ipynb_checkpoints/
