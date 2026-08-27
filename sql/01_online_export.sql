@@ -80,8 +80,8 @@ SELECT
     SUM(pr.pay_amount) AS flight_pr_total_pay,
     COALESCE(SUM(pr.refund_amount), 0) AS flight_refund_amount,
 
-    IF(cardinality(array_distinct(array_agg(pr.pay_tool_id))) <= 100,
-       array_remove(array_distinct(array_agg(pr.pay_tool_id)), NULL), NULL) AS flight_pay_tool_size,
+    IF(cardinality(array_remove(array_distinct(array_agg(pr.pay_tool_id)), NULL)) <= 100,
+       array_remove(array_distinct(array_agg(pr.pay_tool_id)), NULL), NULL) AS flight_pay_tool_detail,
     COUNT(DISTINCT IF(A.is_ticket_success = 1, A.order_no, NULL)) AS flight_ticket_success_order_cnt,
     COUNT(DISTINCT IF(A.status IN (12, 90, 91), A.order_no, NULL)) AS flight_cancel_order_cnt,
     COUNT(DISTINCT IF(A.status IN (39, 95, 93, 31, 30), A.order_no, NULL)) AS flight_refund_order_cnt,

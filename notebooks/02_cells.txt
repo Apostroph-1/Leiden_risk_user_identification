@@ -144,7 +144,7 @@ print(f"  派生后 {len(df.columns)} 列")
 # [TUNABLE] 特征列表: 增删特征会影响模型输入维度
 # 影响内容: 增加特征可能提升模型表现但也增加过拟合风险；删除特征会降低信息量
 FEATURE_COLS = [
-    "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount", "flight_pay_tool_size",
+    "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount", "flight_distinct_pay_tool_cnt",
     "refund_rate", "refund_amount_rate", "comp_amount_rate", "cancel_rate", "gq_rate",
     "ticket_success_rate", "voucher_order_rate", "scalper_rate", "intercept_rate",
     "flight_distinct_user_id_cnt", "flight_distinct_username_cnt", "flight_distinct_mobile_cnt",

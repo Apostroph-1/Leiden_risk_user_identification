@@ -260,6 +260,7 @@ docker compose up
 | v2.5 | server 服务挂载 ./tools，改前端/API 代码免 rebuild（restart 即可） |
 | v2.6 | 新增 MySQL 8.0 服务（明细数据存储，密码走 .env 不进 git）；重写 sql/ 为纯线上取数 SQL（无本地建表） |
 | v2.7 | 全部 notebook 改相对路径（去 d:/ 绝对目录）；新基础数据 26.08.27_base.csv 全量重训（735K 设备）；修复 server community_id "6.0" 崩溃 |
+| v2.8 | 列名歧义修正：支付索引明细统一为 flight_pay_tool_detail，个数直接用 flight_distinct_pay_tool_cnt（不做派生）；含 pay 边全量重训 |
 
 ### 常用命令
 
