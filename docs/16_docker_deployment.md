@@ -5,118 +5,135 @@
 本项目通过 Docker 容器化，实现 Windows 和 Mac mini 两台电脑的环境同步。
 代码通过 GitHub 仓库同步，数据文件（data/ 文件夹）需手动传输。
 
-## 架构
-
-`
-GitHub 仓库 (代码)  ──>  git clone  ──>  本地工作目录
-                                          │
-data/ 文件夹 (手动拷贝)  ──────────────> │
-                                          │
-Docker 容器  <──  docker compose up  <────┘
-     │
-     └──> http://localhost:8766  (社区查询前端)
-     └──> http://localhost:8888  (Jupyter notebook, 可选)
-`
-
 ## 前置条件
 
 ### Windows 机器
-1. 安装 Docker Desktop（已安装）
-2. 安装 WSL2（已安装，需重启电脑生效）
-3. Git 已配置
+1. 安装 Docker Desktop 4.88+
+2. 安装 WSL2：wsl --install --no-distribution --web-download，重启电脑
+3. 关闭内存完整性（HVCI）：Windows 安全中心 -> 设备安全性 -> 内核隔离 -> 关闭内存完整性 -> 重启
+4. 配置 Docker 镜像加速器（见下方）
 
 ### Mac mini
 1. 安装 Docker Desktop for Mac
-2. 安装 Git (rew install git 或 Xcode Command Line Tools)
+2. Git 已安装
 
-## 步骤一：Windows 机器（当前电脑）
+## Docker 镜像加速器配置
 
-### 1.1 重启电脑
-WSL2 安装后需要重启系统才能生效。
+国内网络无法直连 Docker Hub，需要配置镜像加速器。
 
-### 1.2 启动 Docker Desktop
-重启后打开 Docker Desktop 应用，等待左下角状态变为绿色"Running"。
+编辑 ~/.docker/daemon.json（Windows 路径：D:\Users\<用户名>\.docker\daemon.json）：
 
-### 1.3 构建并启动容器
-在项目根目录下执行：
+`json
+{
+  "builder": { "gc": { "defaultKeepStorage": "20GB", "enabled": true } },
+  "experimental": false,
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://docker.1ms.run",
+    "https://docker.xuanyuan.me",
+    "https://dockerpull.org",
+    "https://dockerhub.icu",
+    "https://docker.nastech.cc"
+  ]
+}
+`
 
+修改后重启 Docker Desktop。
+
+## Windows 步骤
+
+### 1. 启动 Docker Desktop
+打开 Docker Desktop 应用，等待左下角状态变绿 Running。
+
+### 2. 构建并启动
 `powershell
 cd D:\Qunar_work\workbuddy_data\leiden
 docker compose build
-docker compose up
+docker compose up -d
 `
 
-构建首次需要下载 Python 基础镜像和安装依赖，约 5-10 分钟。
-后续启动只需几秒。
+构建首次约 15-20 分钟（含下载 Python 基础镜像 + 安装所有依赖）。
+后续启动只需几秒（数据加载约 15 秒）。
 
-### 1.4 验证
-打开浏览器访问 http://localhost:8766 ，应看到社区查询前端页面。
+### 3. 验证
+打开 http://localhost:8766
 
-### 1.5 停止容器
-Ctrl+C 停止，或 docker compose down 清理。
+### 4. 停止
+`powershell
+docker compose down
+`
 
-## 步骤二：Mac mini
+## Mac mini 步骤
 
-### 2.1 克隆代码仓库
+### 1. 克隆代码
 `ash
 git clone https://github.com/Apostroph-1/Leiden_risk_user_identification.git
 cd Leiden_risk_user_identification
 `
 
-### 2.2 传输数据文件
-将 Windows 电脑上 data/ 文件夹整体拷贝到 Mac mini 的项目目录下。
+### 2. 配置镜像加速器
+同上方步骤，编辑 ~/.docker/daemon.json（Mac 路径：~/.docker/daemon.json）。
 
-传输方式（任选其一）：
-- U 盘 / 移动硬盘拷贝（推荐，数据约 1.6GB）
-- 同一局域网 SCP：scp -r user@windows_ip:/D/Qunar_work/workbuddy_data/leiden/data ./
-- 百度网盘 / AirDrop 等
+### 3. 传输数据文件
+将 Windows 上 data/ 文件夹整体拷贝到项目目录。
 
-所需文件清单：
-`
-data/
-├── flight_feature_detail_8.19-90days.csv      (269MB, 原始输入)
-├── test.xlsx                                    (699MB, 测试数据)
-└── model_output/
-    ├── device_risk_score.csv                   (174MB, 风险评分)
-    ├── final_merged_output.csv                 (402MB, 合并输出)
-    ├── graph_adjacency.json                    (61MB, 图邻接)
-    └── device_community.csv                    (14MB, 社区归属)
-`
+传输方式（任选）：
+- U 盘 / 移动硬盘（推荐，约 1.6GB）
+- 局域网 SCP
+- AirDrop 等
 
-### 2.3 构建并启动
+所需文件：
+- data/flight_feature_detail_8.19-90days.csv（269MB）
+- data/model_output/（约 700MB，含 final_merged_output.csv 等）
+
+### 4. 构建并启动
 `ash
 docker compose build
-docker compose up
+docker compose up -d
 `
 
-### 2.4 验证
-打开浏览器访问 http://localhost:8766
+### 5. 验证
+打开 http://localhost:8766
 
 ## 常用命令
 
 | 操作 | 命令 |
 |------|------|
-| 启动前端服务 | docker compose up |
 | 后台启动 | docker compose up -d |
+| 前台启动（看日志） | docker compose up |
 | 停止 | docker compose down |
-| 重新构建（代码更新后） | docker compose build |
+| 重新构建 | docker compose build |
+| 查看日志 | docker logs leiden-server-1 |
 | 启动 Jupyter（可选） | docker compose --profile dev up jupyter |
-| 查看日志 | docker compose logs -f |
 
-## 日常开发流程
+## 日常同步
 
-### Windows 上修改代码后
-1. 修改 notebook 或 server 代码
-2. git add . && git commit -m "描述" && git push
-3. docker compose build && docker compose up
+### Windows 改代码后
+`powershell
+git add -A; git commit -m "描述"; git push
+docker compose build; docker compose up -d
+`
 
-### Mac mini 上拉取更新
-1. git pull
-2. docker compose build && docker compose up
+### Mac mini 拉取更新
+`ash
+git pull
+docker compose build; docker compose up -d
+`
 
-## 注意事项
+## 常见问题
 
-- data/ 文件夹不会通过 git 或 Docker 镜像传输，需手动同步
-- 如果只修改了 	ools/community_server.py 或 	ools/community_viz.html，需要 docker compose build 重新构建
-- Docker 端口映射：8766（前端服务）、8888（Jupyter）
-- 容器内代码路径为 /app，数据路径为 /app/data
+### Docker Desktop 启动报 "virtualisation support wasn't detected"
+原因：Windows HVCI（内存完整性）占用了 VT-x。
+解决：Windows 安全中心 -> 设备安全性 -> 内核隔离 -> 关闭内存完整性 -> 重启。
+
+### Docker 构建报 "failed to fetch anonymous token"
+原因：国内无法直连 Docker Hub。
+解决：配置镜像加速器（见上方），重启 Docker Desktop。
+
+### Docker Desktop 崩溃报 "sailor-ingest.sock: The file cannot be accessed"
+原因：Docker 异常退出后残留 Unix socket 文件。
+解决：
+1. 停止 Docker：Get-Process | Where-Object { .ProcessName -match "docker" } | Stop-Process -Force
+2. 关闭 WSL：wsl --shutdown
+3. 删除残留文件：cmd /c del /f /q "D:\Users\<用户名>\AppData\Local\Docker\run\*" 和 cmd /c del /f /q "D:\Users\<用户名>\AppData\Local\docker-secrets-engine\*"
+4. 重启 Docker Desktop
