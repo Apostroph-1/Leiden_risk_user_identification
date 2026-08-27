@@ -3,13 +3,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-data/*.csv
-data/model_output/*.csv
-data/model_output/*.pkl
-data/model_output/*.png
-data/model_output/*.txt
+data/
 *.png
 .env
-data/*.xlsx 
-data/*.xls 
-*.db 
+*.db
