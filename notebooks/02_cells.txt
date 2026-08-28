@@ -82,6 +82,34 @@ for col in df.columns:
         df[col] = df[col].where(df[col].notna() & (df[col].str.lower() != 'none') & (df[col].str.lower() != 'nan'), None)
 print(f"  数据清洗完成, {len(df)} 行")
 
+# --- 数组列内部清洗: 清掉数组里的空串/null/nan 元素（防止穿透到明细展示） ---
+# [TUNABLE] 修改范围: ARRAY_COLS 里的数组列均可增删
+# 影响内容: 只影响明细展示和 explode 构图输入；图本身 explode 时已过滤，此处修复明细展示
+import ast as _ast
+ARRAY_COLS = ["flight_distinct_user_id", "flight_pay_tool_detail",
+              "flight_uid_card_info", "flight_passenger_mobile_info"]
+_DIRTY_ELEM = {"", " ", "null", "nan", "none", "n/a", "na"}
+def _clean_array_cell(s):
+    """解析数组字符串，剔除脏元素后重新序列化；解析失败原样返回"""
+    if s is None or (isinstance(s, float)):
+        return s
+    try:
+        v = _ast.literal_eval(s)
+        if not isinstance(v, list):
+            return s
+        cleaned = [str(x).strip() for x in v
+                   if str(x).strip().lower() not in _DIRTY_ELEM]
+        return str(cleaned) if cleaned else None
+    except Exception:
+        return s
+_n_cleaned = 0
+for col in ARRAY_COLS:
+    if col in df.columns:
+        before = df[col].copy()
+        df[col] = df[col].apply(_clean_array_cell)
+        _n_cleaned += int((before.fillna("__NA__") != df[col].fillna("__NA__")).sum())
+print(f"  数组内部清洗完成, 修改 {_n_cleaned} 个单元格")
+
 # --- 数值列转换: dtype=str 读入后需转回数值 ---
 # [TUNABLE] 修改范围: 增删需要数值类型的列名
 # 影响内容: 漏转某列 -> derive_features 中的除法运算报错; 多转 -> 字符串被强制转数值

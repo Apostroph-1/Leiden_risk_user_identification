@@ -137,7 +137,7 @@ class GraphEngine:
                        "vote_anomaly_cnt", "vote_total", "rule_hit_cnt",
                        "pseudo_label", "risk_level",
                        "flight_distinct_user_id", "flight_passenger_mobile_info",
-                       "flight_pay_tool_detail", "flight_pay_tool_size", "flight_uid_card_info"]
+                       "flight_pay_tool_detail", "flight_distinct_pay_tool_cnt", "flight_uid_card_info"]
             # 过滤实际存在的列
             import csv as _csv
             with open(merged_path, "r", encoding="utf-8-sig") as _f:
@@ -456,9 +456,9 @@ class GraphEngine:
         sub = self.merged_df[self.merged_df["community_id"] == comm_id].copy()
         total = len(sub)
         # 排序: 默认按支付索引个数降序，可切换
-        sort_map = {"pay_tool": "flight_pay_tool_size", "comp": "flight_comp_total_amount",
+        sort_map = {"pay_tool": "flight_distinct_pay_tool_cnt", "comp": "flight_comp_total_amount",
                     "refund": "flight_refund_amount", "order": "flight_total_order_cnt"}
-        sc = sort_map.get(sort_by, "flight_pay_tool_size")
+        sc = sort_map.get(sort_by, "flight_distinct_pay_tool_cnt")
         if sc in sub.columns:
             sub = sub.sort_values(sc, ascending=False)
         start = (page - 1) * size
@@ -472,7 +472,7 @@ class GraphEngine:
             "flight_scalper_cnt", "flight_intercept_cnt",
             "flight_distinct_user_id_cnt", "flight_distinct_mobile_cnt",
             "flight_uid_distinct_card_num_cnt",
-            "flight_pay_tool_size",
+            "flight_distinct_pay_tool_cnt",
             "refund_rate", "comp_amount_rate",
             "is_short_refund_strong", "is_short_refund_weak",
             "is_machine_refund", "is_night_heavy", "is_multi_account", "is_multi_pay_tool", "is_multi_passenger",
@@ -524,7 +524,7 @@ class GraphEngine:
             "flight_distinct_user_id": parse_list(row.get("flight_distinct_user_id")),
             "flight_passenger_mobile_info": parse_list(row.get("flight_passenger_mobile_info")),
             "flight_pay_tool_detail": parse_list(row.get("flight_pay_tool_detail")),
-            "flight_pay_tool_size": int(row.get("flight_pay_tool_size", 0)) if not pd.isna(row.get("flight_pay_tool_size")) else 0,
+            "flight_distinct_pay_tool_cnt": int(row.get("flight_distinct_pay_tool_cnt", 0)) if not pd.isna(row.get("flight_distinct_pay_tool_cnt")) else 0,
             "flight_uid_card_info": parse_list(row.get("flight_uid_card_info")),
             "flight_distinct_user_id_cnt": int(row.get("flight_distinct_user_id_cnt", 0)) if not pd.isna(row.get("flight_distinct_user_id_cnt")) else 0,
             "flight_distinct_mobile_cnt": int(row.get("flight_distinct_mobile_cnt", 0)) if not pd.isna(row.get("flight_distinct_mobile_cnt")) else 0,

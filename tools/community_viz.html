@@ -308,13 +308,13 @@ function esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").repl
 // Compact rule badges for device-level tables
 function ruleBadges(r){
   const rules=[
-    ["short_refund_s",r.is_short_refund_strong,"#E15759"],
-    ["short_refund_w",r.is_short_refund_weak,"#F28E2B"],
-    ["machine_refund",r.is_machine_refund,"#E15759"],
-    ["night_heavy",r.is_night_heavy,"#B07AA1"],
-    ["multi_account",r.is_multi_account,"#F28E2B"],
-    ["multi_pay_tool",r.is_multi_pay_tool,"#59A14F"],
-    ["multi_passenger",r.is_multi_passenger,"#4E79A7"],
+    ["强短退款",r.is_short_refund_strong,"#E15759"],
+    ["弱短退款",r.is_short_refund_weak,"#F28E2B"],
+    ["机器退款",r.is_machine_refund,"#E15759"],
+    ["夜间密集",r.is_night_heavy,"#B07AA1"],
+    ["多账号",r.is_multi_account,"#F28E2B"],
+    ["多支付",r.is_multi_pay_tool,"#59A14F"],
+    ["多乘机人",r.is_multi_passenger,"#4E79A7"],
   ];
   const hits=rules.filter(x=>x[1]);
   if(!hits.length)return '<span style="color:#999">-</span>';
@@ -322,13 +322,13 @@ function ruleBadges(r){
 }
 function ruleBadgesStr(r){
   const rules=[
-    ["short_refund_s",r.is_short_refund_strong,"#E15759"],
-    ["short_refund_w",r.is_short_refund_weak,"#F28E2B"],
-    ["machine_refund",r.is_machine_refund,"#E15759"],
-    ["night_heavy",r.is_night_heavy,"#B07AA1"],
-    ["multi_account",r.is_multi_account,"#F28E2B"],
-    ["multi_pay_tool",r.is_multi_pay_tool,"#59A14F"],
-    ["multi_passenger",r.is_multi_passenger,"#4E79A7"],
+    ["强短退款",r.is_short_refund_strong,"#E15759"],
+    ["弱短退款",r.is_short_refund_weak,"#F28E2B"],
+    ["机器退款",r.is_machine_refund,"#E15759"],
+    ["夜间密集",r.is_night_heavy,"#B07AA1"],
+    ["多账号",r.is_multi_account,"#F28E2B"],
+    ["多支付",r.is_multi_pay_tool,"#59A14F"],
+    ["多乘机人",r.is_multi_passenger,"#4E79A7"],
   ];
   const hits=rules.filter(function(x){return x[1]});
   if(!hits.length)return '<span style="color:#999">-</span>';
@@ -336,13 +336,13 @@ function ruleBadgesStr(r){
 }
 function commRuleBadges(c){
   const rules=[
-    ["short_refund_s",c.is_short_refund_strong,"#E15759"],
-    ["short_refund_w",c.is_short_refund_weak,"#F28E2B"],
-    ["machine_refund",c.is_machine_refund,"#E15759"],
-    ["night_heavy",c.is_night_heavy,"#B07AA1"],
-    ["multi_account",c.is_multi_account,"#F28E2B"],
-    ["multi_pay_tool",c.is_multi_pay_tool,"#59A14F"],
-    ["multi_passenger",c.is_multi_passenger,"#4E79A7"],
+    ["强短退款",c.is_short_refund_strong,"#E15759"],
+    ["弱短退款",c.is_short_refund_weak,"#F28E2B"],
+    ["机器退款",c.is_machine_refund,"#E15759"],
+    ["夜间密集",c.is_night_heavy,"#B07AA1"],
+    ["多账号",c.is_multi_account,"#F28E2B"],
+    ["多支付",c.is_multi_pay_tool,"#59A14F"],
+    ["多乘机人",c.is_multi_passenger,"#4E79A7"],
   ];
   const hits=rules.filter(x=>x[1]>0);
   if(!hits.length)return '<span style="color:#999">-</span>';
@@ -350,13 +350,13 @@ function commRuleBadges(c){
 }
 function commRuleBadgesStr(c){
   const rules=[
-    ["short_refund_s",c.is_short_refund_strong,"#E15759"],
-    ["short_refund_w",c.is_short_refund_weak,"#F28E2B"],
-    ["machine_refund",c.is_machine_refund,"#E15759"],
-    ["night_heavy",c.is_night_heavy,"#B07AA1"],
-    ["multi_account",c.is_multi_account,"#F28E2B"],
-    ["multi_pay_tool",c.is_multi_pay_tool,"#59A14F"],
-    ["multi_passenger",c.is_multi_passenger,"#4E79A7"],
+    ["强短退款",c.is_short_refund_strong,"#E15759"],
+    ["弱短退款",c.is_short_refund_weak,"#F28E2B"],
+    ["机器退款",c.is_machine_refund,"#E15759"],
+    ["夜间密集",c.is_night_heavy,"#B07AA1"],
+    ["多账号",c.is_multi_account,"#F28E2B"],
+    ["多支付",c.is_multi_pay_tool,"#59A14F"],
+    ["多乘机人",c.is_multi_passenger,"#4E79A7"],
   ];
   const hits=rules.filter(function(x){return x[1]>0});
   if(!hits.length)return '<span style="color:#999">-</span>';
@@ -568,7 +568,7 @@ async function loadMetricsDetail(){
       <td>${r.flight_distinct_user_id_cnt||0}</td>
       <td>${r.flight_distinct_mobile_cnt||0}</td>
       <td>${r.flight_uid_distinct_card_num_cnt||0}</td>
-      <td style="font-weight:600;color:#59A14F">${r.flight_pay_tool_size||0}</td>
+      <td style="font-weight:600;color:#59A14F">${r.flight_distinct_pay_tool_cnt||0}</td>
       <td>${((r.refund_rate||0)*100).toFixed(1)}%</td>
       <td>${((r.comp_amount_rate||0)*100).toFixed(1)}%</td>
       <td>${ruleBadges(r)}</td>
@@ -736,7 +736,7 @@ async function loadAnalysisDetail(){
       +'<td>'+(r.flight_distinct_user_id_cnt||0)+'</td>'
       +'<td>'+(r.flight_distinct_mobile_cnt||0)+'</td>'
       +'<td>'+(r.flight_uid_distinct_card_num_cnt||0)+'</td>'
-      +'<td style="font-weight:600;color:#59A14F">'+(r.flight_pay_tool_size||0)+'</td>'
+      +'<td style="font-weight:600;color:#59A14F">'+(r.flight_distinct_pay_tool_cnt||0)+'</td>'
       +'<td>'+((r.refund_rate||0)*100).toFixed(1)+'%</td>'
       +'<td>'+((r.comp_amount_rate||0)*100).toFixed(1)+'%</td>'
       +'<td>'+ruleBadgesStr(r)+'</td>'
