@@ -1,0 +1,265 @@
+##MD##
+# 05 序列特征融合建模（明细特征 + 宽表 6 模型对比实验）
+
+**目标**: 把 04 产出的 41 个明细行为序列特征并入设备宽表，
+重训 6 模型投票，对比「宽表基线」vs「宽表+序列特征」的分层结果差异。
+
+**实验设计**:
+- 基线: 现有宽表 55 特征（v2.9 的 6 模型结果作参照）
+- 实验: 宽表 55 特征 + 明细 41 特征
+- 对比: 伪标签 AUC / 风险分层分布 / 新特征重要性排名
+
+> 输入: data/26.08.27_base.csv + data/model_output/detail_device_features.csv
+> 输出: data/model_output/seq_model_comparison.csv（设备级对比表）+ 控制台报告
+> 带 [TUNABLE] 注释的参数可调整。
+##CODE##
+import os, time, warnings
+warnings.filterwarnings("ignore")
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import IsolationForest, RandomForestClassifier
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.svm import OneClassSVM
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, average_precision_score
+try:
+    import xgboost as xgb
+    HAS_XGB = True
+except Exception:
+    HAS_XGB = False
+try:
+    import lightgbm as lgb
+    HAS_LGB = True
+except Exception:
+    HAS_LGB = False
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+
+# [TUNABLE] 输入文件
+BASE_CSV  = os.path.join(DATA, "26.08.27_base.csv")
+DETAIL_FEAT_CSV = os.path.join(OUT, "detail_device_features.csv")
+# [TUNABLE] 输出对比表
+COMPARE_CSV = os.path.join(OUT, "seq_model_comparison.csv")
+
+print(f"XGBoost: {HAS_XGB}, LightGBM: {HAS_LGB}")
+##MD##
+## 1. 加载与合并
+
+宽表 + 明细特征按 device_id 左连接（无明细的设备序列特征为 NaN，后填 0）。
+##CODE##
+print("[1/6] 加载与合并")
+t0 = time.time()
+base = pd.read_csv(BASE_CSV, dtype=str, encoding="utf-8")
+seqf = pd.read_csv(DETAIL_FEAT_CSV, dtype=str, encoding="utf-8")
+print(f"  宽表 {len(base)} 行, 明细特征 {len(seqf)} 行")
+
+# 数值转换（宽表）
+STRING_COLS = {"device_id", "flight_distinct_user_id", "flight_distinct_username",
+    "flight_pay_tool_detail", "flight_uid_card_info", "flight_passenger_mobile_info"}
+for col in base.columns:
+    if col not in STRING_COLS:
+        base[col] = pd.to_numeric(base[col], errors="coerce")
+
+# 明细特征数值转换
+for col in seqf.columns:
+    if col != "device_id":
+        seqf[col] = pd.to_numeric(seqf[col], errors="coerce")
+
+df = base.merge(seqf, on="device_id", how="left")
+n_with_seq = df["detail_order_cnt"].notna().sum()
+print(f"  合并后 {len(df)} 行, 有明细特征的设备 {n_with_seq} ({n_with_seq/len(df)*100:.1f}%)")
+
+# 无明细设备（中低风险）序列特征填 0（等价于"无风险信号"）
+seq_cols = [c for c in seqf.columns if c != "device_id"]
+df[seq_cols] = df[seq_cols].fillna(0)
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 2. 特征准备与伪标签
+
+沿用 02 notebook 的伪标签口径（强规则标黑 + 纯正常样本）。
+##CODE##
+print("[2/6] 特征准备与伪标签")
+t0 = time.time()
+
+# 派生特征（与 02 一致的最小集）
+tot = df["flight_total_order_cnt"].replace(0, np.nan)
+df["refund_rate"] = df["flight_refund_order_cnt"] / tot
+df["comp_amount_rate"] = df["flight_comp_total_amount"] / df["flight_pay_ok_order_amount"].replace(0, np.nan)
+
+# 宽表基线特征
+BASE_FEAT = [
+    "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount", "flight_distinct_pay_tool_cnt",
+    "refund_rate", "comp_amount_rate",
+    "flight_distinct_user_id_cnt", "flight_distinct_username_cnt", "flight_distinct_mobile_cnt",
+    "flight_distinct_email_cnt", "flight_distinct_ip_cnt",
+    "flight_uid_distinct_card_num_cnt", "flight_uid_distinct_passenger_mobile_cnt",
+    "flight_avg_discount", "flight_min_discount",
+    "flight_night_order_cnt", "flight_weekend_order_cnt",
+    "flight_max_order_amount", "flight_scalper_cnt", "flight_intercept_cnt",
+    "flight_refund_order_cnt", "flight_cancel_order_cnt",
+    "flight_comp_total_amount", "flight_refund_amount",
+]
+# 新增序列特征（全部 41 列）
+SEQ_FEAT = seq_cols
+
+# 规则（伪标签用，与 02 一致）
+df["is_short_refund_strong"] = (df["flight_min_refund_pay_interval_sec"] <= 600).astype(int)
+df["is_multi_account"] = (df["flight_distinct_user_id_cnt"] >= 2).astype(int)
+df["is_multi_pay_tool"] = (df["flight_distinct_pay_tool_cnt"] >= 3).astype(int)
+df["is_multi_passenger"] = (df["flight_uid_distinct_card_num_cnt"] >= 5).astype(int)
+df["is_scalper"] = (df["flight_scalper_cnt"] >= 1).astype(int)
+rule_hit = (df["is_short_refund_strong"] + df["is_multi_account"] +
+            df["is_multi_pay_tool"] + df["is_multi_passenger"] + df["is_scalper"])
+
+# [TUNABLE] 伪标签口径：强规则(>=3 命中)=1；纯正常(0 命中 且 低行为)=0
+df["pseudo_label"] = np.where(rule_hit >= 3, 1, np.where(rule_hit == 0, 0, -1))
+labeled = df[df["pseudo_label"].isin([0, 1])].copy()
+print(f"  伪标签: 黑 {int((labeled['pseudo_label']==1).sum())} / 白 {int((labeled['pseudo_label']==0).sum())}")
+
+def prep_matrix(data, cols):
+    X = data[cols].copy()
+    for c in cols:
+        X[c] = X[c].fillna(X[c].median() if X[c].notna().any() else 0)
+    X = X.replace([np.inf, -np.inf], 0)
+    return X.values
+
+X_base = prep_matrix(df, BASE_FEAT)
+X_full = prep_matrix(df, BASE_FEAT + SEQ_FEAT)
+y_labeled_base = prep_matrix(labeled, BASE_FEAT)
+y_labeled_full = prep_matrix(labeled, BASE_FEAT + SEQ_FEAT)
+y = labeled["pseudo_label"].values
+print(f"  基线特征 {len(BASE_FEAT)} 列, 全量特征 {len(BASE_FEAT)+len(SEQ_FEAT)} 列, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 3. 监督模型对比（XGB / LGBM / RF）
+
+同一伪标签、同一划分，对比两组特征的 AUC / PR-AUC。
+##CODE##
+print("[3/6] 监督模型对比")
+t0 = time.time()
+X_tr_b, X_te_b, y_tr, y_te = train_test_split(y_labeled_base, y, test_size=0.3, random_state=42, stratify=y)
+X_tr_f, X_te_f = y_labeled_full[:len(X_tr_b)], y_labeled_full[len(X_tr_b):]
+# 对齐切分（用相同索引）
+idx_tr, idx_te = train_test_split(range(len(labeled)), test_size=0.3, random_state=42, stratify=y)
+lab_full_b = prep_matrix(labeled, BASE_FEAT)
+lab_full_f = prep_matrix(labeled, BASE_FEAT + SEQ_FEAT)
+X_tr_b, X_te_b = lab_full_b[idx_tr], lab_full_b[idx_te]
+X_tr_f, X_te_f = lab_full_f[idx_tr], lab_full_f[idx_te]
+y_tr, y_te = y[idx_tr], y[idx_te]
+
+results = {}
+for name, mk in [("xgb", lambda: xgb.XGBClassifier(max_depth=6, eta=0.1, n_estimators=200,
+                                                     eval_metric="logloss", verbosity=0) if HAS_XGB else None),
+                 ("lgb", lambda: lgb.LGBMClassifier(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1) if HAS_LGB else None),
+                 ("rf",  lambda: RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1))]:
+    if mk() is None:
+        continue
+    row = {}
+    for tag, Xtr, Xte in [("base", X_tr_b, X_te_b), ("seq", X_tr_f, X_te_f)]:
+        m = mk()
+        m.fit(Xtr, y_tr)
+        p = m.predict_proba(Xte)[:, 1]
+        row[f"{tag}_auc"] = roc_auc_score(y_te, p)
+        row[f"{tag}_prauc"] = average_precision_score(y_te, p)
+    results[name] = row
+    print(f"  {name}: 基线 AUC {row['base_auc']:.4f} → 序列 AUC {row['seq_auc']:.4f} "
+          f"(Δ {row['seq_auc']-row['base_auc']:+.4f}) | PR-AUC {row['base_prauc']:.4f} → {row['seq_prauc']:.4f}")
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 4. 无监督对比（IsolationForest）
+
+对比两组特征下的异常分数分布。
+##CODE##
+print("[4/6] 无监督对比 (IsolationForest)")
+t0 = time.time()
+# [TUNABLE] contamination 与 02 notebook 一致
+sc_b, sc_f = StandardScaler().fit(X_base), StandardScaler().fit(X_full)
+Xb_s, Xf_s = sc_b.transform(X_base), sc_f.transform(X_full)
+iso_b = IsolationForest(n_estimators=200, contamination=0.05, random_state=42, n_jobs=-1).fit(Xb_s)
+iso_f = IsolationForest(n_estimators=200, contamination=0.05, random_state=42, n_jobs=-1).fit(Xf_s)
+df["iso_score_base"] = -iso_b.score_samples(Xb_s)   # 越大越异常
+df["iso_score_seq"]  = -iso_f.score_samples(Xf_s)
+# 伪标签上的区分度
+lab_mask = df["pseudo_label"].isin([0, 1])
+auc_b = roc_auc_score(df.loc[lab_mask, "pseudo_label"], df.loc[lab_mask, "iso_score_base"])
+auc_f = roc_auc_score(df.loc[lab_mask, "pseudo_label"], df.loc[lab_mask, "iso_score_seq"])
+print(f"  iForest 伪标签 AUC: 基线 {auc_b:.4f} → 序列 {auc_f:.4f} (Δ {auc_f-auc_b:+.4f})")
+results["iforest"] = {"base_auc": auc_b, "seq_auc": auc_f,
+                      "base_prauc": average_precision_score(df.loc[lab_mask,"pseudo_label"], df.loc[lab_mask,"iso_score_base"]),
+                      "seq_prauc": average_precision_score(df.loc[lab_mask,"pseudo_label"], df.loc[lab_mask,"iso_score_seq"])}
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 5. 序列特征重要性排名
+
+用全量特征训练的 XGBoost 输出特征重要性，看序列特征的排名。
+##CODE##
+print("[5/6] 序列特征重要性")
+t0 = time.time()
+ALL_FEAT = BASE_FEAT + SEQ_FEAT
+X_all = prep_matrix(df, ALL_FEAT)
+if HAS_XGB:
+    xm = xgb.XGBClassifier(max_depth=6, eta=0.1, n_estimators=200, eval_metric="logloss", verbosity=0)
+    xm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
+    imp = pd.Series(xm.feature_importances_, index=ALL_FEAT).sort_values(ascending=False)
+    print("  Top 20 特征重要性:")
+    for i, (f, v) in enumerate(imp.head(20).items(), 1):
+        tag = "【序列】" if f in SEQ_FEAT else ""
+        print(f"    {i:2d}. {f}: {v:.4f} {tag}")
+    n_seq_top20 = sum(1 for f in imp.head(20).index if f in SEQ_FEAT)
+    print(f"\n  Top 20 中序列特征占 {n_seq_top20} 个")
+    imp.to_frame("importance").to_csv(os.path.join(OUT, "seq_feature_importance.csv"),
+                                      encoding="utf-8-sig")
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 6. 风险分层对比与输出
+
+用全量特征重算 4 级分层，与现有分层（v2.9 基线）对比。
+##CODE##
+print("[6/6] 分层对比与输出")
+t0 = time.time()
+
+# 现有基线分层（v2.9 的 device_risk_score.csv）
+old = pd.read_csv(os.path.join(OUT, "device_risk_score.csv"), dtype=str,
+                  usecols=["device_id", "risk_level"])
+old = old.rename(columns={"risk_level": "old_risk_level"})
+cmp_df = df[["device_id"]].merge(old, on="device_id", how="left")
+
+# 序列版投票（简化：xgb+lgb+rf+iforest 4 票，伪标签口径）
+vote = np.zeros(len(df))
+if HAS_XGB:
+    p = xm.predict_proba(X_all)[:, 1]; vote += (p > 0.5).astype(int)
+if HAS_LGB:
+    lm = lgb.LGBMClassifier(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1)
+    lm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
+    vote += (lm.predict_proba(X_all)[:, 1] > 0.5).astype(int)
+rm = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)
+rm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
+vote += (rm.predict_proba(X_all)[:, 1] > 0.5).astype(int)
+vote += (df["iso_score_seq"] > df["iso_score_seq"].quantile(0.95)).astype(int)
+df["seq_vote"] = vote
+
+# [TUNABLE] 序列版分层阈值（与现有 4 级口径对齐：60%/2票/1票）
+df["seq_risk_level"] = np.select(
+    [ (df["seq_vote"] >= 3) & (rule_hit >= 2),
+      (df["seq_vote"] >= 2) & (rule_hit >= 1),
+      (df["seq_vote"] >= 1) | (rule_hit >= 1) ],
+    ["高风险", "中风险", "疑似风险"], default="普通用户")
+
+cmp_df["seq_risk_level"] = df["seq_risk_level"].values
+# 分层迁移矩阵
+print("  分层迁移矩阵（行=旧分层, 列=序列版分层）:")
+pivot = pd.crosstab(cmp_df["old_risk_level"], cmp_df["seq_risk_level"])
+print(pivot.to_string())
+n_change = (cmp_df["old_risk_level"] != cmp_df["seq_risk_level"]).sum()
+n_up = ((cmp_df["old_risk_level"]=="中风险") & (cmp_df["seq_risk_level"]=="高风险")).sum()
+print(f"\n  分层变化: {n_change} 台 ({n_change/len(cmp_df)*100:.1f}%), 其中中风险→高风险升级 {n_up} 台")
+
+cmp_df.to_csv(COMPARE_CSV, index=False, encoding="utf-8")
+print(f"\n  输出: {COMPARE_CSV}")
+
+print("\n=== 模型对比汇总 ===")
+for name, r in results.items():
+    print(f"  {name:8s}: AUC {r['base_auc']:.4f} → {r['seq_auc']:.4f} (Δ{r['seq_auc']-r['base_auc']:+.4f}) "
+          f"| PR-AUC {r['base_prauc']:.4f} → {r['seq_prauc']:.4f}")

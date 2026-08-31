@@ -1,0 +1,302 @@
+##MD##
+# 04 明细行为序列特征工程
+
+**目标**: 基于 26.08.27_detail.csv（高风险设备 90 天订单流水，一行一订单），
+按设备聚合生成行为序列特征表，输出 detail_device_features.csv。
+
+**特征族**:
+- A 时间节律: 下单小时分布 / 夜间占比 / 下单间隔统计（机器下单间隔异常均匀）
+- B 行为链: 下单→支付 / 支付→退款申请间隔分布（明细级验证短退款）
+- C 约束对象聚集（SynchroTrap 核心）: 唯一 IP 数 / IP 共享度 / 共享 IP 设备对
+- D 乘机人聚集: 明细级去重证件/手机数、单订单乘机人数分布
+- E 金额结构: 订单金额分布 / 退款金额占比
+
+> 输入: data/26.08.27_detail.csv（26 列，device_id 级明细）
+> 输出: data/model_output/detail_device_features.csv（一行一设备）
+> 带 [TUNABLE] 注释的参数可调整。
+##CODE##
+import os, ast, time
+import numpy as np
+import pandas as pd
+from collections import defaultdict
+
+# ---------- 路径配置（相对路径：代码目录上一级即项目根目录） ----------
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+os.makedirs(OUT, exist_ok=True)
+
+# [TUNABLE] 输入明细文件名（02 SQL 导出的订单流水）
+DETAIL_CSV = os.path.join(DATA, "26.08.27_detail.csv")
+# [TUNABLE] 输出特征表文件名
+FEAT_CSV   = os.path.join(OUT, "detail_device_features.csv")
+
+print(f"输入: {DETAIL_CSV}")
+print(f"输出: {FEAT_CSV}")
+##MD##
+## 1. 加载明细数据
+
+dtype=str 读取防科学计数法；时间列转 datetime；数组列解析。
+##CODE##
+print("[1/6] 加载明细数据")
+t0 = time.time()
+df = pd.read_csv(DETAIL_CSV, dtype=str, encoding="utf-8")
+print(f"  明细 {len(df)} 行 x {len(df.columns)} 列, 耗时 {time.time()-t0:.1f}s")
+
+# --- 数据清洗（与 02/03 notebook 同口径） ---
+DIRTY_VALUES = {"null", "nan", "none", "n/a", "na", "NULL", "NaN", "None", "N/A", "", " "}
+for col in df.columns:
+    if df[col].dtype == object:
+        df[col] = df[col].astype(str).str.strip()
+        df[col] = df[col].replace({k: None for k in DIRTY_VALUES})
+
+# 时间列转 datetime
+TIME_COLS = ["create_time", "pay_time", "ticket_time", "refund_apply_time",
+             "refund_complete_time", "last_updated"]
+for col in TIME_COLS:
+    df[col] = pd.to_datetime(df[col], errors="coerce")
+
+# 数值列
+for col in ["order_amount", "refund_amount", "pay_amount", "compensation_amount"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+df["pay_ok"] = pd.to_numeric(df["pay_ok"], errors="coerce")
+df["is_ticket_success"] = pd.to_numeric(df["is_ticket_success"], errors="coerce")
+# 取消/退款状态码
+df["status"] = pd.to_numeric(df["status"], errors="coerce")
+
+# 数组列解析
+def parse_array(s):
+    if s is None or (isinstance(s, float) and np.isnan(s)):
+        return []
+    try:
+        v = ast.literal_eval(s) if isinstance(s, str) else s
+        return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+for col in ["card_nums", "mobiles"]:
+    if col in df.columns:
+        df[col] = df[col].apply(parse_array)
+
+# IP 清洗（脏 IP 不参与聚集特征）
+df["ip"] = df["ip"].where(df["ip"].notna() & (df["ip"].astype(str).str.len() > 3), None)
+
+# 按设备+下单时间排序（保证序列时序）
+df = df.sort_values(["device_id", "create_time"]).reset_index(drop=True)
+print(f"  设备数: {df['device_id'].nunique()}, 时间范围: {df['create_time'].min()} ~ {df['create_time'].max()}")
+##MD##
+## 2. 特征族 A：时间节律
+
+下单小时直方图 / 夜间占比 / 下单间隔统计。
+**核心假设**: 机器下单的间隔异常均匀（std 极小）或异常规律（夜间密集）。
+##CODE##
+print("[2/6] 特征族 A: 时间节律")
+t0 = time.time()
+
+def hour_hist(times):
+    """24 维下单小时直方图（归一化）+ 节律统计"""
+    if len(times) == 0:
+        return {}
+    hours = times.dt.hour
+    return {
+        "detail_night_order_ratio": (hours.between(0, 6)).mean(),          # 0-6 点占比
+        "detail_morning_ratio": (hours.between(7, 11)).mean(),
+        "detail_afternoon_ratio": (hours.between(12, 17)).mean(),
+        "detail_evening_ratio": (hours.between(18, 23)).mean(),
+        "detail_active_hours": hours.nunique(),                              # 活跃小时数（越少越机器）
+        "detail_hour_entropy": -(hours.value_counts(normalize=True)
+                                  * np.log(hours.value_counts(normalize=True) + 1e-12)).sum(),  # 小时分布熵（机器低熵）
+        "detail_weekend_order_ratio": (times.dt.dayofweek >= 5).mean() if len(times) else np.nan,
+    }
+
+def interval_stats(times):
+    """相邻下单间隔统计（秒）：机器特征 = 间隔 std 极小 / 中位数极短"""
+    if len(times) < 2:
+        return {"detail_order_interval_mean_sec": np.nan, "detail_order_interval_std_sec": np.nan,
+                "detail_order_interval_min_sec": np.nan, "detail_order_interval_median_sec": np.nan,
+                "detail_order_interval_cv": np.nan}
+    iv = times.diff().dropna().dt.total_seconds()
+    iv = iv[iv > 0]  # 剔除同刻多单
+    if len(iv) == 0:
+        return {"detail_order_interval_mean_sec": np.nan, "detail_order_interval_std_sec": np.nan,
+                "detail_order_interval_min_sec": np.nan, "detail_order_interval_median_sec": np.nan,
+                "detail_order_interval_cv": np.nan}
+    mean = iv.mean()
+    return {
+        "detail_order_interval_mean_sec": mean,
+        "detail_order_interval_std_sec": iv.std(),
+        "detail_order_interval_min_sec": iv.min(),
+        "detail_order_interval_median_sec": iv.median(),
+        # [TUNABLE] cv = std/mean：间隔变异系数，机器批量下单 cv 极小（间隔几乎恒定）
+        "detail_order_interval_cv": iv.std() / mean if mean > 0 else np.nan,
+    }
+
+df["_create_valid"] = df["create_time"]
+grp_time = df.groupby("device_id")["_create_valid"]
+featA = pd.DataFrame(index=grp_time.size().index)
+featA["detail_order_cnt"] = grp_time.size()
+rows_hist, rows_iv = {}, {}
+for dev, times in grp_time:
+    rows_hist[dev] = hour_hist(times)
+    rows_iv[dev] = interval_stats(times)
+featA = featA.join(pd.DataFrame.from_dict(rows_hist, orient="index"))
+featA = featA.join(pd.DataFrame.from_dict(rows_iv, orient="index"))
+print(f"  完成, {featA.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+featA.head(3)
+##MD##
+## 3. 特征族 B：行为链间隔
+
+下单→支付 / 支付→退款申请 的间隔分布（明细级，比宽表 min 更丰富）。
+##CODE##
+print("[3/6] 特征族 B: 行为链间隔")
+t0 = time.time()
+
+# 单级间隔（秒）
+df["_create_to_pay_sec"] = (df["pay_time"] - df["create_time"]).dt.total_seconds()
+df["_pay_to_refund_sec"] = (df["refund_apply_time"] - df["pay_time"]).dt.total_seconds()
+df["_pay_to_ticket_sec"] = (df["ticket_time"] - df["pay_time"]).dt.total_seconds()
+
+def chain_stats(g):
+    c2p = g["_create_to_pay_sec"].dropna()
+    p2r = g["_pay_to_refund_sec"].dropna()
+    p2t = g["_pay_to_ticket_sec"].dropna()
+    p2r_pos = p2r[p2r >= 0]
+    return {
+        # 下单→支付
+        "detail_create_pay_median_sec": c2p.median() if len(c2p) else np.nan,
+        "detail_create_pay_min_sec": c2p.min() if len(c2p) else np.nan,
+        # 支付→退款申请（核心：快退款）
+        "detail_pay_refund_cnt": len(p2r_pos),
+        "detail_pay_refund_median_sec": p2r_pos.median() if len(p2r_pos) else np.nan,
+        "detail_pay_refund_min_sec": p2r_pos.min() if len(p2r_pos) else np.nan,
+        # [TUNABLE] 快退款阈值 600s（与宽表 is_short_refund_strong 一致）
+        "detail_fast_refund_cnt": (p2r_pos <= 600).sum(),
+        "detail_fast_refund_ratio": (p2r_pos <= 600).mean() if len(p2r_pos) else np.nan,
+        # 支付→出票
+        "detail_pay_ticket_median_sec": p2t.median() if len(p2t) else np.nan,
+    }
+
+rows_chain = {}
+for dev, g in df.groupby("device_id"):
+    rows_chain[dev] = chain_stats(g)
+featB = pd.DataFrame.from_dict(rows_chain, orient="index")
+print(f"  完成, {featB.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+featB.head(3)
+##MD##
+## 4. 特征族 C：约束对象聚集（SynchroTrap 核心）
+
+**核心假设**: 黑产受 IP 资源约束，多设备共用少量 IP。
+- 设备级: 唯一 IP 数 / IP 切换率
+- 全局级: IP 被多少设备共享（共享度越高的 IP 越可疑）→ 设备的"IP 共享分"
+##CODE##
+print("[4/6] 特征族 C: IP 聚集（SynchroTrap）")
+t0 = time.time()
+
+# --- 设备级 IP 特征 ---
+ip_g = df[df["ip"].notna()].groupby("device_id")
+featC = pd.DataFrame(index=featA.index)
+featC["detail_unique_ip_cnt"] = ip_g["ip"].nunique()
+featC["detail_ip_per_order"] = featC["detail_unique_ip_cnt"] / featA["detail_order_cnt"].replace(0, np.nan)
+# IP 切换率：唯一IP/订单数 越低说明全程固定 IP（代理池特征的反面：真实用户多IP）
+# 两者极端都可疑：完全固定 or 每单一换
+
+# --- 全局 IP 共享度（核心团伙信号） ---
+ip_device_cnt = df[df["ip"].notna()].groupby("ip")["device_id"].nunique()
+# 每个 IP 被多少设备使用
+df["_ip_share"] = df["ip"].map(ip_device_cnt)
+# 设备级聚合：使用过的 IP 的共享度统计
+share_g = df[df["ip"].notna()].groupby("device_id")["_ip_share"]
+featC["detail_ip_max_share"] = share_g.max()          # 该设备用过的最大共享 IP（连了多少设备）
+featC["detail_ip_mean_share"] = share_g.mean()
+# [TUNABLE] 共享阈值 5：IP 被 >=5 台设备使用算"团伙 IP"
+gang_ip = ip_device_cnt[ip_device_cnt >= 5]
+featC["detail_gang_ip_cnt"] = df[df["ip"].isin(gang_ip.index)].groupby("device_id")["ip"].nunique()
+featC["detail_gang_ip_ratio"] = featC["detail_gang_ip_cnt"] / featC["detail_unique_ip_cnt"].replace(0, np.nan)
+
+# --- 共享团伙 IP 的设备对（简化 SynchroTrap：同 IP 即连边） ---
+# 统计每台设备通过共享 IP 连接的邻居设备数
+ip_dev_map = df[df["ip"].notna()].groupby("ip")["device_id"].apply(lambda s: set(s))
+dev_neighbors = defaultdict(set)
+for ip, devs in ip_dev_map.items():
+    if len(devs) >= 2:
+        for d in devs:
+            dev_neighbors[d].update(devs - {d})
+featC["detail_ip_neighbor_cnt"] = pd.Series({d: len(dev_neighbors.get(d, set())) for d in featC.index})
+print(f"  团伙级共享 IP（>=5 设备）: {len(gang_ip)} 个")
+print(f"  完成, {featC.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+featC.head(3)
+##MD##
+## 5. 特征族 D/E：乘机人聚集 + 金额结构
+
+明细级乘机人/手机去重（比宽表更准的口径）+ 订单金额分布。
+##CODE##
+print("[5/6] 特征族 D/E: 乘机人聚集 + 金额结构")
+t0 = time.time()
+
+def entity_stats(g):
+    cards = set()
+    mobs = set()
+    per_order_card = []
+    for cn, mb in zip(g["card_nums"], g["mobiles"]):
+        cards.update(cn)
+        mobs.update(mb)
+        per_order_card.append(len(cn))
+    return {
+        "detail_unique_card_cnt": len(cards),
+        "detail_unique_mobile_cnt": len(mobs),
+        "detail_card_per_order": np.mean(per_order_card) if per_order_card else np.nan,
+        "detail_max_cards_one_order": max(per_order_card) if per_order_card else 0,
+    }
+
+rows_ent = {}
+for dev, g in df.groupby("device_id"):
+    rows_ent[dev] = entity_stats(g)
+featD = pd.DataFrame.from_dict(rows_ent, orient="index")
+
+# --- E 金额结构 ---
+amt_g = df.groupby("device_id")
+featE = pd.DataFrame(index=featA.index)
+featE["detail_order_amount_mean"] = amt_g["order_amount"].mean()
+featE["detail_order_amount_max"] = amt_g["order_amount"].max()
+featE["detail_order_amount_std"] = amt_g["order_amount"].std()
+featE["detail_refund_amount_sum"] = amt_g["refund_amount"].sum()
+featE["detail_refund_amount_ratio"] = featE["detail_refund_amount_sum"] / amt_g["order_amount"].sum().replace(0, np.nan)
+featE["detail_comp_amount_sum"] = amt_g["compensation_amount"].sum()
+# 状态分布
+featE["detail_cancel_order_cnt"] = amt_g["status"].apply(lambda s: s.isin([12, 90, 91]).sum())
+featE["detail_cancel_order_ratio"] = featE["detail_cancel_order_cnt"] / featA["detail_order_cnt"].replace(0, np.nan)
+featE["detail_refund_status_cnt"] = amt_g["status"].apply(lambda s: s.isin([39, 95, 93, 31, 30]).sum())
+
+print(f"  D: {featD.shape[1]} 列, E: {featE.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 6. 合并输出
+
+四个特征族合并为一张设备级特征表，UTF-8 输出。
+##CODE##
+print("[6/6] 合并输出")
+t0 = time.time()
+
+feat = featA.join(featB).join(featC).join(featD).join(featE)
+feat.index.name = "device_id"
+feat = feat.reset_index()
+
+# 数值列四舍五入（减小文件体积）
+num_cols = feat.select_dtypes(include=[np.number]).columns
+feat[num_cols] = feat[num_cols].round(4)
+
+feat.to_csv(FEAT_CSV, index=False, encoding="utf-8")
+print(f"  输出: {FEAT_CSV}")
+print(f"  {feat.shape[0]} 行 x {feat.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+
+# 快速验证
+print("\n=== 验证 ===")
+print(f"  设备数: {feat['device_id'].nunique()} (明细设备 21399)")
+print(f"  特征列数: {feat.shape[1] - 1}")
+print(f"\n  核心特征抽样统计:")
+for c in ["detail_unique_ip_cnt", "detail_ip_max_share", "detail_gang_ip_cnt",
+          "detail_ip_neighbor_cnt", "detail_order_interval_cv", "detail_hour_entropy",
+          "detail_fast_refund_ratio"]:
+    if c in feat.columns:
+        s = feat[c]
+        print(f"    {c}: 中位 {s.median():.3f}, 均值 {s.mean():.3f}, 最大 {s.max():.3f}, 非空 {s.notna().sum()}")
+print(f"\n  device_id 示例（防科学计数法）: {feat['device_id'].iloc[0]}")
