@@ -31,6 +31,8 @@ COMM_CSV     = os.path.join(OUTPUT, "device_community.csv")
 RISK_CSV     = os.path.join(OUTPUT, "device_risk_score.csv")
 # [TUNABLE] 输出文件名
 MERGED_CSV   = os.path.join(OUTPUT, "final_merged_output.csv")
+# 中高危设备-社区映射输出（uid + community_id 两列）
+MIDHIGH_CSV  = os.path.join(OUTPUT, "midhigh_device_community.csv")
 
 print("配置:")
 print(f"  原始宽表: {INPUT_CSV}")
@@ -207,6 +209,16 @@ fsize = os.path.getsize(MERGED_CSV) / 1024 / 1024
 print(f"  输出: {MERGED_CSV}")
 print(f"  大小: {fsize:.1f} MB, 耗时 {time.time()-t0:.1f}s")
 print(f"  最终表: {len(df)} 行 x {len(df.columns)} 列")
+
+# --- 中高危设备-社区映射输出: uid + community_id 两列, UTF-8 ---
+# [TUNABLE] 修改范围: MIDHIGH_LEVELS 可增删纳入的风险等级
+# 影响内容: 决定哪些设备进入该输出文件; 当前为中风险+高风险
+MIDHIGH_LEVELS = ["中风险", "高风险"]
+midhigh = df[df["risk_level"].isin(MIDHIGH_LEVELS)][["device_id", "community_id"]].copy()
+midhigh["community_id"] = midhigh["community_id"].astype(float).astype(int)
+midhigh.to_csv(MIDHIGH_CSV, index=False, encoding="utf-8")
+print(f"  中高危映射: {MIDHIGH_CSV}")
+print(f"  行数: {len(midhigh)} (等级: {', '.join(MIDHIGH_LEVELS)})")
 
 # 快速验证
 print("\n=== 验证 ===")
