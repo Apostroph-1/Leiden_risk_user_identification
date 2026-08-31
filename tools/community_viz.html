@@ -148,15 +148,11 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" onclick="loadTimeseries()">查看时序图</button>
 <span style="font-size:12px;color:#666;margin-left:8px">SynchroTrap 视角：x=日期 y=设备 点=当日订单数(颜色深浅) 红点=当日有退款 | 点击设备行下钻订单明细</span>
 </div>
-<div style="display:flex;gap:12px;flex-wrap:wrap">
-<div style="flex:1;min-width:700px;overflow:auto;max-height:640px;border:1px solid #eee;border-radius:8px;background:#fff">
-<canvas id="tsCanvas" width="1200" height="600" style="cursor:crosshair"></canvas>
-</div>
-<div style="width:360px;max-height:640px;overflow:auto">
 <div id="tsInfo" style="font-size:13px;color:#555;padding:4px 0">输入社区ID查看时序相似性图</div>
-<div id="tsOrders" style="margin-top:8px"></div>
+<div id="tsChartWrap" style="width:100%;overflow:auto;border:1px solid #eee;border-radius:8px;background:#fff">
+<canvas id="tsCanvas" style="cursor:crosshair;display:block"></canvas>
 </div>
-</div>
+<div id="tsOrders" style="margin-top:10px"></div>
 </div>
 <div class="panel" id="panel-analysis">
 <div class="filter-bar">
@@ -820,22 +816,30 @@ async function loadTimeseries(){
 function drawTimeseries(){
   if(!tsData)return;
   const cv=document.getElementById("tsCanvas"), ctx=cv.getContext("2d");
+  const wrap=document.getElementById("tsChartWrap");
   const devs=tsData.devices, dates=tsData.dates;
-  const rowH=Math.max(Math.min(24, Math.floor(560/Math.max(devs.length,1))),4);
-  const leftW=200, topH=60, cellW=Math.max((cv.width-leftW-20)/Math.max(dates.length,1),2);
-  cv.height=topH+devs.length*rowH+20;
-  tsLayout={leftW,topH,cellW,rowH,devs,dates};
-  ctx.clearRect(0,0,cv.width,cv.height);
-  // 日期轴（每7天一个刻度）
+  // 自适应：宽度取容器实际宽（最小900），高按设备数（限高 900，超出滚动）
+  const dpr=window.devicePixelRatio||1;
+  const cssW=Math.max(wrap.clientWidth-2,900);
+  const rowH=Math.max(Math.min(22, Math.floor(760/Math.max(devs.length,1))),5);
+  const leftW=190, topH=56;
+  const cssH=Math.min(topH+devs.length*rowH+26,900);
+  cv.style.width=cssW+"px"; cv.style.height=cssH+"px";
+  cv.width=Math.round(cssW*dpr); cv.height=Math.round(cssH*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  tsLayout={leftW,topH,cssW,cssH,rowH,devs,dates};
+  ctx.clearRect(0,0,cssW,cssH);
+  const cellW=Math.max((cssW-leftW-16)/Math.max(dates.length,1),2);
+  tsLayout.cellW=cellW;
+  // 日期轴（自适应刻度密度：7 或 14 天）
+  const step=dates.length>60?14:7;
   ctx.fillStyle="#999";ctx.font="10px sans-serif";
-  dates.forEach((dt,i)=>{if(i%7===0){ctx.fillText(dt.slice(5),leftW+i*cellW,topH-8);}});
+  dates.forEach((dt,i)=>{if(i%step===0){ctx.fillText(dt.slice(5),leftW+i*cellW,topH-8);}});
   // 设备行
   devs.forEach((dev,ri)=>{
     const y=topH+ri*rowH;
-    // 设备标签
     ctx.fillStyle=ipColor(dev.ip);ctx.font="10px monospace";
-    ctx.fillText((dev.ip||'?')+" | "+dev.device_id.slice(0,10),4,y+rowH-4);
-    // 天格子
+    ctx.fillText(((dev.ip||"?")+" | "+dev.device_id).slice(0,26),4,y+rowH-4);
     dates.forEach((dt,ci)=>{
       const cell=dev.days[dt];
       const x=leftW+ci*cellW;
@@ -848,11 +852,13 @@ function drawTimeseries(){
   });
   // 图例
   ctx.font="11px sans-serif";
-  ctx.fillStyle="rgba(78,121,167,0.9)";ctx.fillRect(leftW,cv.height-14,12,10);
-  ctx.fillStyle="#555";ctx.fillText("当日下单（深=多）",leftW+16,cv.height-5);
-  ctx.fillStyle="#E15759";ctx.fillRect(leftW+130,cv.height-14,12,10);
-  ctx.fillStyle="#555";ctx.fillText("当日有退款",leftW+146,cv.height-5);
+  ctx.fillStyle="rgba(78,121,167,0.9)";ctx.fillRect(leftW,cssH-14,12,10);
+  ctx.fillStyle="#555";ctx.fillText("当日下单（深=多）",leftW+16,cssH-5);
+  ctx.fillStyle="#E15759";ctx.fillRect(leftW+130,cssH-14,12,10);
+  ctx.fillStyle="#555";ctx.fillText("当日有退款",leftW+146,cssH-5);
 }
+// 容器尺寸变化时重绘（自适应）
+window.addEventListener("resize",()=>{if(tsData)drawTimeseries();});
 // IP 着色（同 IP 同色：团伙共用 IP 一眼可见）
 function ipColor(ip){
   if(!ip)return "#999";
@@ -863,20 +869,23 @@ function ipColor(ip){
 document.getElementById("tsCanvas").addEventListener("click",async e=>{
   if(!tsLayout)return;
   const rect=e.target.getBoundingClientRect();
-  const x=e.clientX-rect.left, y=e.clientY-rect.top;
+  const y=e.clientY-rect.top;
   const ri=Math.floor((y-tsLayout.topH)/tsLayout.rowH);
   if(ri<0||ri>=tsLayout.devs.length)return;
   const dev=tsLayout.devs[ri];
   const d=await api(`/api/device_timeseries/${dev.device_id}?page=1&size=50`);
   if(d.error){return;}
-  let html=`<div style="font-weight:600;color:#E15759">设备 ${dev.device_id}</div>`;
-  html+=`<div style="font-size:12px;color:#666">共 ${d.total} 单 | 主IP: ${dev.ip||'-'}</div>`;
-  html+='<table class="data-table" style="font-size:11px"><tr><th>订单</th><th>下单时间</th><th>支付时间</th><th>退款申请</th><th>IP</th><th>金额</th></tr>';
+  let html=`<div style="font-weight:600;color:#E15759;font-size:14px">设备明细：${dev.device_id}</div>`;
+  html+=`<div style="font-size:12px;color:#666;margin-bottom:6px">共 ${d.total} 单（展示前 ${d.orders.length} 条）| 主IP: <span style="font-family:monospace">${dev.ip||'-'}</span></div>`;
+  // 完整值不截断：订单号/IP 全长展示，列宽自适应（table-layout auto + 断行）
+  html+='<table class="data-table" style="font-size:12px;table-layout:auto;width:100%;word-break:break-all"><tr><th>订单号</th><th>下单时间</th><th>支付时间</th><th>退款申请</th><th>IP</th><th>金额</th></tr>';
   d.orders.forEach(o=>{
-    html+=`<tr><td title="${o.order_no}">${o.order_no.slice(-8)}</td><td>${o.create_time.slice(5,16)}</td><td>${o.pay_time?o.pay_time.slice(5,16):'-'}</td><td style="color:${o.refund_apply_time?'#E15759':'#999'}">${o.refund_apply_time?o.refund_apply_time.slice(5,16):'-'}</td><td style="font-family:monospace">${(o.ip||'-').slice(0,14)}</td><td>${o.order_amount}</td></tr>`;
+    html+=`<tr><td style="font-family:monospace">${o.order_no}</td><td>${o.create_time}</td><td>${o.pay_time||'-'}</td><td style="color:${o.refund_apply_time?'#E15759':'#999'}">${o.refund_apply_time||'-'}</td><td style="font-family:monospace">${o.ip||'-'}</td><td>${o.order_amount}</td></tr>`;
   });
   html+='</table>';
   document.getElementById("tsOrders").innerHTML=html;
+  // 下钻明细渲染后，时序图自动滚回可视区顶部
+  document.getElementById("tsChartWrap").scrollIntoView({block:"start"});
 });
 document.querySelector('[data-tab="timeseries"]').addEventListener("click",()=>{if(!tsData)document.getElementById("tsInfo").textContent="输入社区ID查看时序相似性图";});
 // Auto-load metrics on first tab switch
