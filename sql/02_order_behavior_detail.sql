@@ -15,14 +15,13 @@
 --     p_mobile / o_ip_country / o_ip_province / o_ip_city
 --   （注意：订单表没有 ip_country / ip_province，地理三件套从票维度表取）
 -- 命名规则：线上参数用 ${target_date} / ${START} / ${END}
--- 使用方法：替换 ${...} 后线上执行，下载 CSV 放 data/detail/
---======================================================================
 
 WITH base_order AS (
     -- 中高危设备的订单（社区 != '-1' 的名单，与线上 temp 表同口径）
     SELECT
         A.uid                                          AS device_id,
         IF(A.dom_inter = 1, A.main_order_no, A.order_no) AS order_no,
+        A.user_order_no,
         A.user_id,
         A.create_time,
         A.pay_ok,
@@ -50,24 +49,24 @@ WITH base_order AS (
 ),
 pay_refund AS (
     -- 退款/扣款金额：按 orderid 聚合（沿用宽表 SQL 口径）
+    -- 注意：日期只限 ${START}，不限 ${END}（90 天全量，避免分批窗口漏数据）
     SELECT
         orderid,
         SUM(IF(opertype = '退款', amt, 0)) AS refund_amount,
         SUM(IF(opertype = '扣款', amt, 0)) AS pay_amount
     FROM pp_pub.dwd__qunar_selfpayord_di
     WHERE d >= date_sub('${target_date}', ${START})
-      AND d < date_sub('${target_date}', ${END})
     GROUP BY orderid
 ),
 pay_method AS (
     -- 支付通道：cardnumf6l4join 或 thirdUid（沿用宽表 SQL 口径）
+    -- 注意：日期只限 ${START}（90 天全量，避免分批窗口漏数据）
     SELECT
         orderid,
         COALESCE(cardnumf6l4join,
                  regexp_extract(pay_json, 'thirdUid":"(.*?)"', 1)) AS pay_tool_id
     FROM pp_pub.dwd_fin_sub_trade_payment_account_detail_di
     WHERE dt >= date_sub('${target_date}', ${START})
-      AND dt < date_sub('${target_date}', ${END})
       AND COALESCE(cardnumf6l4join,
                    regexp_extract(pay_json, 'thirdUid":"(.*?)"', 1)) IS NOT NULL
     GROUP BY orderid,
@@ -87,10 +86,11 @@ ticket_dim AS (
     FROM flight.dwd_ord_wide_order_ticket_di
     WHERE dt >= date_sub('${target_date}', ${START})
       AND dt < date_sub('${target_date}', ${END})
-    GROUP BY IF(o_dom_inter = 1, o_main_order_no, o_order_no)
+    GROUP BY 1
 ),
 comp AS (
     -- 赔付：pay_success 口径（沿用宽表 SQL，AVG=MAX 判单条）
+    -- 注意：order_no 限定在 base_order 范围内，控制扫描量
     SELECT
         order_no AS order_no1,
         ROUND(IF(
@@ -100,14 +100,14 @@ comp AS (
             AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
         ), 2) AS compensation_amount
     FROM default.ods_callcenterdb_cc_compensation
-    WHERE dt = '${target_date}'
-      AND create_time >= date_sub('${target_date}', ${START})
-      AND create_time < date_sub('${target_date}', ${END})
+    WHERE dt = '%(DATE)s'
+      AND order_no IN (SELECT order_no FROM base_order)
     GROUP BY 1
 )
 SELECT
     B.device_id,
     B.order_no,
+    B.user_order_no,
     B.user_id,
     -- 订单生命周期各环节时间（一行一订单，未发生为空）
     B.create_time           AS create_time,           -- 下单
@@ -137,6 +137,6 @@ SELECT
     T.mobiles
 FROM base_order B
 LEFT JOIN ticket_dim T  ON B.order_no = T.order_no
-LEFT JOIN pay_method PM ON B.order_no = PM.orderid
-LEFT JOIN pay_refund PR ON B.order_no = PR.orderid
+LEFT JOIN pay_method PM ON B.user_order_no = PM.orderid
+LEFT JOIN pay_refund PR ON B.user_order_no = PR.orderid
 LEFT JOIN comp C        ON B.order_no = C.order_no1;
