@@ -263,6 +263,7 @@ docker compose up
 | v2.8 | 列名歧义修正：支付索引明细统一为 flight_pay_tool_detail，个数直接用 flight_distinct_pay_tool_cnt（不做派生）；含 pay 边全量重训 |
 | v2.9 | 前端规则标签中文化（强短退款/多账号等 7 条）；排序字段修正为 flight_distinct_pay_tool_cnt；02/03 增加数组内部清洗（修复明细空值 25192 行） |
 | v3.0 | 新增 sql/02_order_behavior_detail.sql（一行一订单流水，字段合规）；01 保持仅高风险构图（中高危构图实测过慢，用户决策聚焦最高危）；新增 midhigh_device_community.csv 输出 |
+| v3.1 | 04/05 notebook：明细序列特征（41 列）+ 融合建模对比；反标签泄露改造（软标签+特征剔除+硬标记富集度评估：黄牛富集 18.6x）；前端新增时序分析页签（SynchroTrap 可视化+设备下钻） |
 
 ### 常用命令
 

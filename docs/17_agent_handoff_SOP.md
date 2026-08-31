@@ -167,6 +167,7 @@ URL: http://localhost:8766
 | 路径查询 | 任意两值 BFS 最短路径 | /api/path?a=X&b=Y |
 | 多跳路径 | A 到 B 所有路径（DFS，最多 20 条） | /api/paths?a=X&b=Y |
 | 节点查询 | 任意值查邻居列表 | /api/node/<value> |
+| 时序分析 | SynchroTrap 时序图（x=日期 y=设备 红=退款），点击设备下钻订单明细 | /api/community_timeseries/<id> |
 
 ### Tableau 10 色系
 
@@ -301,3 +302,5 @@ Windows: 关闭 HVCI 内存完整性（Windows 安全中心 -> 设备安全性 -
 | /api/paths?a=X&b=Y | GET | 多跳路径 DFS |
 | /api/node/<value> | GET | 节点查询 |
 | /api/community_graph/<id> | GET | 指定社区图 |
+| /api/community_timeseries/<id>?max=150 | GET | 社区时序相似性数据（SynchroTrap 可视化） |
+| /api/device_timeseries/<device_id>?page=1&size=50 | GET | 设备订单流水下钻（时序图点击） |

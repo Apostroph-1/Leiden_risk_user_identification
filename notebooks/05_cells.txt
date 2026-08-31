@@ -105,7 +105,7 @@ BASE_FEAT = [
 # 新增序列特征（全部 41 列）
 SEQ_FEAT = seq_cols
 
-# 规则（伪标签用，与 02 一致）
+# 规则（软标签用，与 02 一致）
 df["is_short_refund_strong"] = (df["flight_min_refund_pay_interval_sec"] <= 600).astype(int)
 df["is_multi_account"] = (df["flight_distinct_user_id_cnt"] >= 2).astype(int)
 df["is_multi_pay_tool"] = (df["flight_distinct_pay_tool_cnt"] >= 3).astype(int)
@@ -114,10 +114,41 @@ df["is_scalper"] = (df["flight_scalper_cnt"] >= 1).astype(int)
 rule_hit = (df["is_short_refund_strong"] + df["is_multi_account"] +
             df["is_multi_pay_tool"] + df["is_multi_passenger"] + df["is_scalper"])
 
-# [TUNABLE] 伪标签口径：强规则(>=3 命中)=1；纯正常(0 命中 且 低行为)=0
-df["pseudo_label"] = np.where(rule_hit >= 3, 1, np.where(rule_hit == 0, 0, -1))
-labeled = df[df["pseudo_label"].isin([0, 1])].copy()
-print(f"  伪标签: 黑 {int((labeled['pseudo_label']==1).sum())} / 白 {int((labeled['pseudo_label']==0).sum())}")
+# ========== 反标签泄露改造（v2）：软标签 + 相关特征剔除 ==========
+# 1) 软标签: 7 条规则加权投票的置信度（0~1），而非非黑即白的硬标签。
+#    模型学习"风险倾向"而不是重构规则本身。
+W = {"is_short_refund_strong": 0.25, "is_multi_passenger": 0.20,
+     "is_multi_account": 0.20, "is_multi_pay_tool": 0.15, "is_scalper": 0.20}
+soft = sum(df[k] * w for k, w in W.items())
+df["soft_label"] = soft / sum(W.values())
+
+# 2) 特征剔除: 与规则输入列相关性 > 0.7 的特征不进模型（防标签泄露）
+# [TUNABLE] 相关性阈值 0.7：调小->更严格防泄露但特征更少; 调大->保留更多特征
+RULE_INPUTS = ["flight_min_refund_pay_interval_sec", "flight_distinct_user_id_cnt",
+               "flight_distinct_pay_tool_cnt", "flight_uid_distinct_card_num_cnt", "flight_scalper_cnt"]
+def find_leaky_feats(feats, threshold=0.7):
+    leaky = set(RULE_INPUTS)
+    # 去重（BASE_FEAT 本身含规则输入列，直接拼接会重复选列）
+    cols = list(dict.fromkeys(feats + RULE_INPUTS))
+    num = df[cols].apply(pd.to_numeric, errors="coerce")
+    for f in feats:
+        if f in leaky:
+            continue
+        for r in RULE_INPUTS:
+            pair = num[[f, r]].dropna()
+            if len(pair) > 100 and abs(pair[f].corr(pair[r])) > threshold:
+                leaky.add(f)
+                break
+    return leaky
+_all_feats = BASE_FEAT + SEQ_FEAT
+LEAKY = find_leaky_feats(_all_feats, 0.7)
+print(f"  剔除泄露特征 {len(LEAKY)} 个: {sorted(LEAKY)[:8]}{'...' if len(LEAKY)>8 else ''}")
+CLEAN_FEAT = [f for f in _all_feats if f not in LEAKY]
+
+# 3) 软标签训练集: 极端置信度样本（>0.6 黑 / ==0 白），中间地带不参与训练
+# [TUNABLE] 黑样本置信度阈值 0.6
+labeled = df[(df["soft_label"] >= 0.6) | (df["soft_label"] == 0)].copy()
+print(f"  软标签训练集: 黑 {int((labeled['soft_label']>=0.6).sum())} / 白 {int((labeled['soft_label']==0).sum())}")
 
 def prep_matrix(data, cols):
     X = data[cols].copy()
@@ -126,12 +157,13 @@ def prep_matrix(data, cols):
     X = X.replace([np.inf, -np.inf], 0)
     return X.values
 
-X_base = prep_matrix(df, BASE_FEAT)
-X_full = prep_matrix(df, BASE_FEAT + SEQ_FEAT)
-y_labeled_base = prep_matrix(labeled, BASE_FEAT)
-y_labeled_full = prep_matrix(labeled, BASE_FEAT + SEQ_FEAT)
-y = labeled["pseudo_label"].values
-print(f"  基线特征 {len(BASE_FEAT)} 列, 全量特征 {len(BASE_FEAT)+len(SEQ_FEAT)} 列, 耗时 {time.time()-t0:.1f}s")
+# 基线组=宽表剔除泄露列; 实验组=+序列特征（同样剔除泄露列）
+BASE_CLEAN = [f for f in BASE_FEAT if f not in LEAKY]
+X_base = prep_matrix(df, BASE_CLEAN)
+X_full = prep_matrix(df, CLEAN_FEAT)
+y = labeled["soft_label"].values  # 软标签回归式学习
+y_hard = (labeled["soft_label"] >= 0.6).astype(int).values  # 评估用硬口径
+print(f"  基线特征 {len(BASE_CLEAN)} 列, 实验特征 {len(CLEAN_FEAT)} 列, 耗时 {time.time()-t0:.1f}s")
 ##MD##
 ## 3. 监督模型对比（XGB / LGBM / RF）
 
@@ -139,30 +171,29 @@ print(f"  基线特征 {len(BASE_FEAT)} 列, 全量特征 {len(BASE_FEAT)+len(SE
 ##CODE##
 print("[3/6] 监督模型对比")
 t0 = time.time()
-X_tr_b, X_te_b, y_tr, y_te = train_test_split(y_labeled_base, y, test_size=0.3, random_state=42, stratify=y)
-X_tr_f, X_te_f = y_labeled_full[:len(X_tr_b)], y_labeled_full[len(X_tr_b):]
-# 对齐切分（用相同索引）
-idx_tr, idx_te = train_test_split(range(len(labeled)), test_size=0.3, random_state=42, stratify=y)
-lab_full_b = prep_matrix(labeled, BASE_FEAT)
-lab_full_f = prep_matrix(labeled, BASE_FEAT + SEQ_FEAT)
+idx_tr, idx_te = train_test_split(range(len(labeled)), test_size=0.3, random_state=42, stratify=y_hard)
+lab_full_b = prep_matrix(labeled, BASE_CLEAN)
+lab_full_f = prep_matrix(labeled, CLEAN_FEAT)
 X_tr_b, X_te_b = lab_full_b[idx_tr], lab_full_b[idx_te]
 X_tr_f, X_te_f = lab_full_f[idx_tr], lab_full_f[idx_te]
-y_tr, y_te = y[idx_tr], y[idx_te]
+y_tr_soft = y[idx_tr]  # 软标签用于拟合
+y_tr, y_te_hard = y_hard[idx_tr], y_hard[idx_te]
 
 results = {}
-for name, mk in [("xgb", lambda: xgb.XGBClassifier(max_depth=6, eta=0.1, n_estimators=200,
-                                                     eval_metric="logloss", verbosity=0) if HAS_XGB else None),
-                 ("lgb", lambda: lgb.LGBMClassifier(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1) if HAS_LGB else None),
-                 ("rf",  lambda: RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1))]:
+# 软标签回归式学习（XGBRegressor/LGBMRegressor 拟合 0~1 置信度），评估用硬口径 AUC
+from sklearn.ensemble import RandomForestRegressor
+for name, mk in [("xgb", lambda: xgb.XGBRegressor(max_depth=6, eta=0.1, n_estimators=200, verbosity=0) if HAS_XGB else None),
+                 ("lgb", lambda: lgb.LGBMRegressor(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1) if HAS_LGB else None),
+                 ("rf",  lambda: RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1))]:
     if mk() is None:
         continue
     row = {}
     for tag, Xtr, Xte in [("base", X_tr_b, X_te_b), ("seq", X_tr_f, X_te_f)]:
         m = mk()
-        m.fit(Xtr, y_tr)
-        p = m.predict_proba(Xte)[:, 1]
-        row[f"{tag}_auc"] = roc_auc_score(y_te, p)
-        row[f"{tag}_prauc"] = average_precision_score(y_te, p)
+        m.fit(Xtr, y_tr_soft)
+        p = np.clip(m.predict(Xte), 0, 1)
+        row[f"{tag}_auc"] = roc_auc_score(y_te_hard, p)
+        row[f"{tag}_prauc"] = average_precision_score(y_te_hard, p)
     results[name] = row
     print(f"  {name}: 基线 AUC {row['base_auc']:.4f} → 序列 AUC {row['seq_auc']:.4f} "
           f"(Δ {row['seq_auc']-row['base_auc']:+.4f}) | PR-AUC {row['base_prauc']:.4f} → {row['seq_prauc']:.4f}")
@@ -181,14 +212,15 @@ iso_b = IsolationForest(n_estimators=200, contamination=0.05, random_state=42, n
 iso_f = IsolationForest(n_estimators=200, contamination=0.05, random_state=42, n_jobs=-1).fit(Xf_s)
 df["iso_score_base"] = -iso_b.score_samples(Xb_s)   # 越大越异常
 df["iso_score_seq"]  = -iso_f.score_samples(Xf_s)
-# 伪标签上的区分度
-lab_mask = df["pseudo_label"].isin([0, 1])
-auc_b = roc_auc_score(df.loc[lab_mask, "pseudo_label"], df.loc[lab_mask, "iso_score_base"])
-auc_f = roc_auc_score(df.loc[lab_mask, "pseudo_label"], df.loc[lab_mask, "iso_score_seq"])
-print(f"  iForest 伪标签 AUC: 基线 {auc_b:.4f} → 序列 {auc_f:.4f} (Δ {auc_f-auc_b:+.4f})")
+# 硬口径（soft>=0.6）上的区分度
+lab_mask = df["soft_label"].isin([0]) | (df["soft_label"] >= 0.6)
+y_hard_all = (df.loc[lab_mask, "soft_label"] >= 0.6).astype(int)
+auc_b = roc_auc_score(y_hard_all, df.loc[lab_mask, "iso_score_base"])
+auc_f = roc_auc_score(y_hard_all, df.loc[lab_mask, "iso_score_seq"])
+print(f"  iForest 硬口径 AUC: 基线 {auc_b:.4f} → 序列 {auc_f:.4f} (Δ {auc_f-auc_b:+.4f})")
 results["iforest"] = {"base_auc": auc_b, "seq_auc": auc_f,
-                      "base_prauc": average_precision_score(df.loc[lab_mask,"pseudo_label"], df.loc[lab_mask,"iso_score_base"]),
-                      "seq_prauc": average_precision_score(df.loc[lab_mask,"pseudo_label"], df.loc[lab_mask,"iso_score_seq"])}
+                      "base_prauc": average_precision_score(y_hard_all, df.loc[lab_mask,"iso_score_base"]),
+                      "seq_prauc": average_precision_score(y_hard_all, df.loc[lab_mask,"iso_score_seq"])}
 print(f"  耗时 {time.time()-t0:.1f}s")
 ##MD##
 ## 5. 序列特征重要性排名
@@ -197,12 +229,11 @@ print(f"  耗时 {time.time()-t0:.1f}s")
 ##CODE##
 print("[5/6] 序列特征重要性")
 t0 = time.time()
-ALL_FEAT = BASE_FEAT + SEQ_FEAT
-X_all = prep_matrix(df, ALL_FEAT)
+X_all = prep_matrix(df, CLEAN_FEAT)
 if HAS_XGB:
-    xm = xgb.XGBClassifier(max_depth=6, eta=0.1, n_estimators=200, eval_metric="logloss", verbosity=0)
-    xm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
-    imp = pd.Series(xm.feature_importances_, index=ALL_FEAT).sort_values(ascending=False)
+    xm = xgb.XGBRegressor(max_depth=6, eta=0.1, n_estimators=200, verbosity=0)
+    xm.fit(prep_matrix(labeled, CLEAN_FEAT), labeled["soft_label"].values)
+    imp = pd.Series(xm.feature_importances_, index=CLEAN_FEAT).sort_values(ascending=False)
     print("  Top 20 特征重要性:")
     for i, (f, v) in enumerate(imp.head(20).items(), 1):
         tag = "【序列】" if f in SEQ_FEAT else ""
@@ -226,17 +257,18 @@ old = pd.read_csv(os.path.join(OUT, "device_risk_score.csv"), dtype=str,
 old = old.rename(columns={"risk_level": "old_risk_level"})
 cmp_df = df[["device_id"]].merge(old, on="device_id", how="left")
 
-# 序列版投票（简化：xgb+lgb+rf+iforest 4 票，伪标签口径）
+# 序列版投票（xgb+lgb+rf 回归器拟合软标签 + iforest，4 票）
+# [TUNABLE] 回归分数切票阈值 0.5
 vote = np.zeros(len(df))
 if HAS_XGB:
-    p = xm.predict_proba(X_all)[:, 1]; vote += (p > 0.5).astype(int)
+    vote += (np.clip(xm.predict(X_all), 0, 1) > 0.5).astype(int)
 if HAS_LGB:
-    lm = lgb.LGBMClassifier(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1)
-    lm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
-    vote += (lm.predict_proba(X_all)[:, 1] > 0.5).astype(int)
-rm = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)
-rm.fit(prep_matrix(labeled, ALL_FEAT), labeled["pseudo_label"].values)
-vote += (rm.predict_proba(X_all)[:, 1] > 0.5).astype(int)
+    lm = lgb.LGBMRegressor(num_leaves=31, learning_rate=0.1, n_estimators=200, verbose=-1)
+    lm.fit(prep_matrix(labeled, CLEAN_FEAT), labeled["soft_label"].values)
+    vote += (np.clip(lm.predict(X_all), 0, 1) > 0.5).astype(int)
+rm = RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)
+rm.fit(prep_matrix(labeled, CLEAN_FEAT), labeled["soft_label"].values)
+vote += (np.clip(rm.predict(X_all), 0, 1) > 0.5).astype(int)
 vote += (df["iso_score_seq"] > df["iso_score_seq"].quantile(0.95)).astype(int)
 df["seq_vote"] = vote
 
@@ -263,3 +295,68 @@ print("\n=== 模型对比汇总 ===")
 for name, r in results.items():
     print(f"  {name:8s}: AUC {r['base_auc']:.4f} → {r['seq_auc']:.4f} (Δ{r['seq_auc']-r['base_auc']:+.4f}) "
           f"| PR-AUC {r['base_prauc']:.4f} → {r['seq_prauc']:.4f}")
+
+##MD##
+## 7. 独立硬标记富集度评估（新标准，替代伪标签 AUC）
+
+**原理**: 用三个**不参与标签生成**的业务硬标记做裁判——
+被拦截设备 / 黄牛标记单 / 高危社区成员。
+指标 = 模型分数 Top 1% 设备中硬标记命中率 vs 全体基线命中率的**富集倍数**。
+这个口径无法被标签泄露污染，是模型真实抓坏能力的度量。
+##CODE##
+print("[7/7] 独立硬标记富集度评估")
+t0 = time.time()
+
+# 全量设备分数（用序列版模型：xgb 回归 + iForest 序列版，取均值融合）
+if HAS_XGB:
+    df["score_xgb"] = np.clip(xm.predict(X_all), 0, 1)
+df["score_iso"] = (df["iso_score_seq"] - df["iso_score_seq"].min()) / \
+                  (df["iso_score_seq"].max() - df["iso_score_seq"].min() + 1e-12)
+score_cols = [c for c in ["score_xgb", "score_iso"] if c in df.columns]
+df["final_score"] = df[score_cols].mean(axis=1)
+
+# 三个硬标记（全部独立于规则/标签）
+df["hm_intercept"] = (pd.to_numeric(df["flight_intercept_cnt"], errors="coerce") >= 1).astype(int)
+df["hm_scalper"]   = (pd.to_numeric(df["flight_scalper_cnt"], errors="coerce") >= 1).astype(int)
+# 高危社区成员：Leiden 高危社区的设备
+try:
+    comm = pd.read_csv(os.path.join(OUT, "gang_list.csv"), dtype=str)
+    high_comm_ids = set(comm[comm["is_high_risk_gang"] == "1"]["community_id"]) if "is_high_risk_gang" in comm.columns else set()
+    dev_comm = pd.read_csv(os.path.join(OUT, "device_community.csv"), dtype=str,
+                           usecols=["node", "node_type", "community_id"])
+    dev_comm = dev_comm[dev_comm["node_type"] == "device"]
+    high_comm_devs = set(dev_comm[dev_comm["community_id"].isin(high_comm_ids)]["node"])
+except Exception:
+    high_comm_devs = set()
+df["hm_gang_member"] = df["device_id"].isin(high_comm_devs).astype(int)
+
+print(f"\n  硬标记规模: 拦截 {int(df['hm_intercept'].sum())} / 黄牛 {int(df['hm_scalper'].sum())} / 高危社区 {int(df['hm_gang_member'].sum())}")
+print(f"  （高危社区成员做参考——它与序列特征有信息重叠，前两个才是完全独立裁判）")
+
+# 富集度: Top1% 分数设备中硬标记命中率 / 全体命中率
+print(f"\n  {'硬标记':<12s} {'Top0.1%':>10s} {'Top1%':>8s} {'全体基线':>8s} {'富集倍数(Top1%)':>14s}")
+for hm, name in [("hm_intercept", "被拦截"), ("hm_scalper", "黄牛标记"), ("hm_gang_member", "高危社区")]:
+    base_rate = df[hm].mean()
+    for pct in [0.001, 0.01]:
+        n = max(int(len(df) * pct), 1)
+        top = df.nlargest(n, "final_score")
+        rate = top[hm].mean()
+        if pct == 0.01:
+            top1_rate, enrich = rate, rate / base_rate if base_rate > 0 else np.nan
+        else:
+            top01_rate = rate
+    print(f"  {name:<12s} {top01_rate*100:>9.1f}% {top1_rate*100:>7.1f}% {base_rate*100:>7.1f}% {enrich:>12.1f}x")
+
+# 输出硬标记评估结果
+hm_rows = []
+for hm, name in [("hm_intercept", "被拦截"), ("hm_scalper", "黄牛标记"), ("hm_gang_member", "高危社区")]:
+    base_rate = df[hm].mean()
+    n = max(int(len(df) * 0.01), 1)
+    top1_rate = df.nlargest(n, "final_score")[hm].mean()
+    hm_rows.append({"hard_marker": name, "base_rate": round(base_rate, 5),
+                    "top1pct_rate": round(top1_rate, 5),
+                    "enrichment": round(top1_rate / base_rate, 2) if base_rate > 0 else None})
+pd.DataFrame(hm_rows).to_csv(os.path.join(OUT, "hard_marker_evaluation.csv"),
+                             index=False, encoding="utf-8-sig")
+print(f"\n  输出: hard_marker_evaluation.csv")
+print(f"  耗时 {time.time()-t0:.1f}s")

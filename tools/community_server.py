@@ -54,7 +54,28 @@ class GraphEngine:
         self.comm_nodes = defaultdict(list)
         self.gang_df = None
         self.merged_df = None
+        # 明细行为流水（时序可视化用，懒加载）
+        self.detail_df = None
         self._loaded = False
+
+    def _load_detail(self):
+        """懒加载订单明细流水（26.08.27_detail.csv），供时序可视化"""
+        if self.detail_df is not None:
+            return self.detail_df
+        detail_path = os.path.join(os.path.dirname(self.out_dir), "26.08.27_detail.csv")
+        if not os.path.exists(detail_path):
+            return None
+        d = pd.read_csv(detail_path, dtype=str, encoding="utf-8",
+                        usecols=["device_id", "order_no", "create_time", "pay_time",
+                                 "refund_apply_time", "ip", "order_amount", "status"])
+        for c in ["create_time", "pay_time", "refund_apply_time"]:
+            d[c] = pd.to_datetime(d[c], errors="coerce")
+        d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
+        d["date"] = d["create_time"].dt.strftime("%Y-%m-%d")
+        # 只留有下单时间的
+        d = d[d["date"].notna()]
+        self.detail_df = d
+        return d
 
     def load(self):
         if self._loaded:
@@ -532,6 +553,65 @@ class GraphEngine:
         }
 
 
+    def get_community_timeseries(self, comm_id, max_devices=150):
+        """社区时序相似性数据（SynchroTrap 风格可视化）
+        返回: 社区内设备 x 日期的行为矩阵 + 每设备的 IP 集合
+        结构: dates / devices:[{device_id, ip, days:{date: {cnt, refund}}}]
+        """
+        d = self._load_detail()
+        if d is None:
+            return {"error": "26.08.27_detail.csv not found"}
+        # 社区设备列表
+        sub = self.merged_df[self.merged_df["community_id"] == int(comm_id)]
+        devs = set(sub["device_id"])
+        if not devs:
+            return {"error": f"community {comm_id} not found"}
+        dd = d[d["device_id"].isin(devs)]
+        if dd.empty:
+            return {"error": "no detail data for this community"}
+        # 按订单量排序取 top 设备（画图密度控制）
+        # [TUNABLE] max_devices: 时序图最多展示的设备数
+        top_devs = dd["device_id"].value_counts().head(max_devices).index.tolist()
+        dd = dd[dd["device_id"].isin(top_devs)]
+        dates = sorted(dd["date"].unique())
+        # 退款标记
+        dd["_is_refund"] = dd["refund_apply_time"].notna()
+        g = dd.groupby(["device_id", "date"]).agg(
+            cnt=("order_no", "count"), refund=("_is_refund", "max")).reset_index()
+        # 设备主 IP（最常用）
+        ip_main = dd.groupby("device_id")["ip"].agg(lambda s: s.mode().iloc[0] if len(s.mode()) else None)
+        devices = []
+        for dev in top_devs:
+            row = {"device_id": dev, "ip": ip_main.get(dev), "days": {}}
+            sub_g = g[g["device_id"] == dev]
+            for _, r in sub_g.iterrows():
+                row["days"][r["date"]] = {"c": int(r["cnt"]), "r": bool(r["refund"])}
+            devices.append(row)
+        return {"community_id": int(comm_id), "device_cnt": len(devs),
+                "shown_devices": len(top_devs), "dates": dates, "devices": devices}
+
+    def get_device_timeseries(self, device_id, page=1, size=50):
+        """单设备时序下钻明细（点击时序图设备行后调用）"""
+        d = self._load_detail()
+        if d is None:
+            return {"error": "26.08.27_detail.csv not found"}
+        dd = d[d["device_id"] == device_id].sort_values("create_time")
+        total = len(dd)
+        start, end = (page - 1) * size, page * size
+        pg = dd.iloc[start:end]
+        orders = []
+        for _, r in pg.iterrows():
+            orders.append({
+                "order_no": r["order_no"], "date": r["date"],
+                "create_time": str(r["create_time"])[:19],
+                "pay_time": str(r["pay_time"])[:19] if pd.notna(r["pay_time"]) else "",
+                "refund_apply_time": str(r["refund_apply_time"])[:19] if pd.notna(r["refund_apply_time"]) else "",
+                "ip": r["ip"] if pd.notna(r["ip"]) else "",
+                "order_amount": round(float(r["order_amount"]), 2) if pd.notna(r["order_amount"]) else 0,
+                "status": int(r["status"]) if pd.notna(r["status"]) else None,
+            })
+        return {"device_id": device_id, "total": total, "page": page, "size": size, "orders": orders}
+
     def get_community_analysis(self, page=1, size=20, sort_by="comp", sort_dir="desc"):
         """Aggregate communities + classify behavior patterns."""
         if self.merged_df is None:
@@ -691,6 +771,15 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/device_detail/"):
             device_id = unquote(path.split("/", 3)[-1])
             self._send_json(engine.get_device_detail(device_id))
+        elif path.startswith("/api/community_timeseries/"):
+            comm_id = path.split("/")[-1]
+            max_dev = int(params.get("max", ["150"])[0])
+            self._send_json(engine.get_community_timeseries(comm_id, max_dev))
+        elif path.startswith("/api/device_timeseries/"):
+            device_id = path.split("/", 3)[-1]
+            page = int(params.get("page", ["1"])[0])
+            size = int(params.get("size", ["50"])[0])
+            self._send_json(engine.get_device_timeseries(device_id, page, size))
         elif path == "/api/community_analysis":
             page = int(params.get("page", ["1"])[0])
             size = int(params.get("size", ["20"])[0])
