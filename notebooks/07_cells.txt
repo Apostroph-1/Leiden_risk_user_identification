@@ -22,7 +22,9 @@ DATA = os.path.join(BASE, "data")
 OUT  = os.path.join(BASE, "data", "model_output")
 print("[1/4] 加载明细与实体图社区")
 t0 = time.time()
-d = pd.read_csv(os.path.join(DATA, "26.08.27_detail.csv"), dtype=str, encoding="utf-8",
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_detail
+d = pd.read_csv(resolve_detail(), dtype=str, encoding="utf-8",
                 usecols=["device_id", "dep_city", "arr_city", "order_no"])
 d = d[d["dep_city"].notna() & d["arr_city"].notna()]
 d["_route"] = d["dep_city"] + "→" + d["arr_city"]

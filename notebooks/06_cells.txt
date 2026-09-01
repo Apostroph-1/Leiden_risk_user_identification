@@ -17,7 +17,9 @@ from collections import defaultdict
 BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
 DATA = os.path.join(BASE, "data")
 OUT  = os.path.join(BASE, "data", "model_output")
-DETAIL_CSV = os.path.join(DATA, "26.08.27_detail.csv")
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_detail
+DETAIL_CSV = resolve_detail()
 print(f"输入: {DETAIL_CSV}")
 ##MD##
 ## 1. 加载明细

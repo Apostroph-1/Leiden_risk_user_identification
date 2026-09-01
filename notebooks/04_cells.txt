@@ -27,7 +27,9 @@ OUT  = os.path.join(BASE, "data", "model_output")
 os.makedirs(OUT, exist_ok=True)
 
 # [TUNABLE] 输入明细文件名（02 SQL 导出的订单流水）
-DETAIL_CSV = os.path.join(DATA, "26.08.27_detail.csv")
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_detail
+DETAIL_CSV = resolve_detail()
 # [TUNABLE] 输出特征表文件名
 FEAT_CSV   = os.path.join(OUT, "detail_device_features.csv")
 

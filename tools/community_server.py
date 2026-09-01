@@ -67,7 +67,12 @@ class GraphEngine:
         """懒加载订单明细流水（26.08.27_detail.csv），供时序可视化"""
         if self.detail_df is not None:
             return self.detail_df
-        detail_path = os.path.join(os.path.dirname(self.out_dir), "26.08.27_detail.csv")
+        # 自动发现最新 *_detail.csv（data_loader 与 notebook 同口径）
+        import glob as _glob, re as _re
+        _data_dir = os.path.dirname(self.out_dir)
+        _cands = [os.path.basename(p) for p in _glob.glob(os.path.join(_data_dir, "*_detail.csv"))]
+        _dated = [(m.group(1), f) for f in _cands if (m := _re.match(r"^(\d{2}\.\d{2}\.\d{2})_", f))]
+        detail_path = os.path.join(_data_dir, sorted(_dated)[-1][1]) if _dated else os.path.join(_data_dir, "26.08.27_detail.csv")
         if not os.path.exists(detail_path):
             return None
         d = pd.read_csv(detail_path, dtype=str, encoding="utf-8",

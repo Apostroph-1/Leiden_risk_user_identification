@@ -26,7 +26,9 @@ DATA   = os.path.join(BASE, "data")
 OUTPUT = os.path.join(DATA, "model_output")
 
 # [TUNABLE] 输入文件名
-INPUT_CSV    = os.path.join(DATA, "26.08.27_base.csv")
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_base
+INPUT_CSV    = resolve_base()
 COMM_CSV     = os.path.join(OUTPUT, "device_community.csv")
 RISK_CSV     = os.path.join(OUTPUT, "device_risk_score.csv")
 # [TUNABLE] 输出文件名

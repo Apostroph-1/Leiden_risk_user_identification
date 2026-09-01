@@ -24,8 +24,10 @@ def check(name, ok, detail):
     report.append({"check": name, "status": "PASS" if ok else "FAIL", "detail": detail})
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
-base = pd.read_csv(os.path.join(DATA, "26.08.27_base.csv"), dtype=str)
-det = pd.read_csv(os.path.join(DATA, "26.08.27_detail.csv"), dtype=str)
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_base, resolve_detail
+base = pd.read_csv(resolve_base(), dtype=str)
+det = pd.read_csv(resolve_detail(), dtype=str)
 full = pd.read_csv(os.path.join(OUT, "final_merged_output.csv"), dtype=str,
                    usecols=["device_id", "community_id", "risk_level", "flight_refund_amount",
                             "flight_pay_ok_order_amount", "flight_total_order_cnt"])

@@ -54,7 +54,10 @@ os.makedirs(OUT, exist_ok=True)
 
 # [TUNABLE] 输入文件名
 # 影响内容: 切换不同时间窗口的数据文件
-INPUT_CSV = os.path.join(DATA, "26.08.27_base.csv")
+# 数据自动发现：找最新 *_base.csv；找不到则提示输入（兜底）
+import sys as _sys; _sys.path.insert(0, os.path.join(BASE, "tools"))
+from data_loader import resolve_base
+INPUT_CSV = resolve_base()
 
 # [TUNABLE] 采样行数: None=全量, 正整数=抽样测试
 # 影响内容: None=全量865K行(慢), 10000=快速测试
