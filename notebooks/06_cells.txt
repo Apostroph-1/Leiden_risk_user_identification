@@ -1,0 +1,203 @@
+##MD##
+# 06 套利/自动化/金额档位特征（方向①②③）
+
+**目标**: 基于明细数据构建三族新特征并打标：
+- ① 骗赔套利评分：全额退占比 / 快退+赔付组合 / 退后再下单回流
+- ② 金额档位聚集（SynchroTrap 约束对象新玩法）：同社区设备在同档位金额+同航线的聚集度
+- ③ 自动化操作链：下单→支付秒级占比 / 支付间隔均匀度 / 退款整点对齐
+
+**输出**: detail_device_features_v2.csv（设备级新特征）+ 更新 community_risk_tags.csv（新标签进前端）
+> 输入: data/26.08.27_detail.csv + data/model_output/ 现有产出
+##CODE##
+import os, ast, time
+import numpy as np
+import pandas as pd
+from collections import defaultdict
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+DETAIL_CSV = os.path.join(DATA, "26.08.27_detail.csv")
+print(f"输入: {DETAIL_CSV}")
+##MD##
+## 1. 加载明细
+
+时间列 format='mixed'（防混杂格式丢数据），金额/退款转数值。
+##CODE##
+print("[1/5] 加载明细")
+t0 = time.time()
+d = pd.read_csv(DETAIL_CSV, dtype=str, encoding="utf-8")
+for c in ["create_time", "pay_time", "refund_apply_time", "refund_complete_time"]:
+    d[c] = pd.to_datetime(d[c], errors="coerce", format="mixed")
+d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
+d["refund_amount"] = pd.to_numeric(d["refund_amount"], errors="coerce")
+d["compensation_amount"] = pd.to_numeric(d["compensation_amount"], errors="coerce")
+d = d[d["create_time"].notna()].sort_values(["device_id", "create_time"]).reset_index(drop=True)
+print(f"  {len(d)} 行, {d['device_id'].nunique()} 设备, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 2. 特征族①：骗赔套利评分
+
+全额退占比 / 快退×全额退组合 / 退后再下单（回流）/ 退款间隔中位数。
+##CODE##
+print("[2/5] 特征族①: 骗赔套利")
+t0 = time.time()
+
+# 订单级套利信号
+d["_full_refund"] = (d["refund_amount"].abs() >= d["order_amount"] * 0.95) & d["refund_amount"].notna() & (d["order_amount"] > 0)
+d["_has_refund"] = d["refund_apply_time"].notna()
+d["_pay_to_refund_sec"] = (d["refund_apply_time"] - d["pay_time"]).dt.total_seconds()
+# [TUNABLE] 快退阈值 3600s（1小时，套利口径比 600s 宽）
+d["_fast_refund"] = d["_pay_to_refund_sec"].between(0, 3600)
+# 全额退 + 快退 = 套利单
+d["_arb_order"] = d["_full_refund"] & d["_fast_refund"]
+# 退后再下单（回流）: 该退款单之后同设备还有新订单
+d["_refund_idx"] = d.groupby("device_id")["_has_refund"].cumsum()
+d["_order_after_refund"] = d["_has_refund"] & (d["_refund_idx"] < d.groupby("device_id")["_refund_idx"].transform("max"))
+
+rows = {}
+for dev, g in d.groupby("device_id"):
+    n = len(g)
+    n_refund = int(g["_has_refund"].sum())
+    n_full = int(g["_full_refund"].sum())
+    n_arb = int(g["_arb_order"].sum())
+    comp_sum = g["compensation_amount"].sum() if "compensation_amount" in g else 0
+    rows[dev] = {
+        "detail_total_orders": n,
+        # 套利族
+        "arb_full_refund_cnt": n_full,
+        "arb_full_refund_ratio": n_full / n,
+        "arb_fast_full_cnt": n_arb,
+        "arb_fast_full_ratio": n_arb / n,
+        "arb_refund_then_reorder_cnt": int(g["_order_after_refund"].sum()),
+        "arb_comp_amount_sum": comp_sum,
+        # 快退间隔分布
+        "arb_pay_refund_median_sec": g["_pay_to_refund_sec"][g["_pay_to_refund_sec"] >= 0].median(),
+        "arb_pay_refund_min_sec": g["_pay_to_refund_sec"][g["_pay_to_refund_sec"] >= 0].min(),
+        "arb_has_refund": n_refund,
+    }
+feat1 = pd.DataFrame.from_dict(rows, orient="index")
+feat1.index.name = "device_id"
+print(f"  完成 {feat1.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+print(f"  套利单(全额退+1h快退)设备数: {(feat1['arb_fast_full_cnt']>0).sum()}")
+feat1.head(3)
+##MD##
+## 3. 特征族②：金额档位聚集（SynchroTrap 约束对象 = 金额档+航线）
+
+同社区设备在「同档位金额(±5%) × 同航线」的聚集度。
+档位化: 金额取整到 50 元档；航线 = dep_city→arr_city。
+##CODE##
+print("[3/5] 特征族②: 金额档位+航线聚集")
+t0 = time.time()
+
+# 社区归属
+full = pd.read_csv(os.path.join(OUT, "final_merged_output.csv"), dtype=str,
+                   usecols=["device_id", "community_id"])
+full["community_id"] = pd.to_numeric(full["community_id"], errors="coerce")
+dev2comm = dict(zip(full["device_id"], full["community_id"]))
+
+# 档位与航线
+d["_amt_band"] = (d["order_amount"] / 50).round() * 50
+d["_route"] = d["dep_city"].astype(str) + "→" + d["arr_city"].astype(str)
+d["_community"] = d["device_id"].map(dev2comm)
+
+# (社区, 档位, 航线) 组合的设备聚集
+band_g = d[d["_community"].notna()].groupby(["_community", "_amt_band", "_route"]).agg(
+    devs=("device_id", "nunique"), orders=("order_no", "count")).reset_index()
+strong_bands = band_g[band_g["devs"] >= 3]  # [TUNABLE] 同档同航线>=3台设备算聚集
+print(f"  强聚集组合(社区×档位×航线 >=3 设备): {len(strong_bands)} 组")
+
+# 设备级: 落在强聚集组合中的订单占比
+strong_keys = set(zip(strong_bands["_community"], strong_bands["_amt_band"], strong_bands["_route"]))
+d["_in_strong_band"] = [ (c, b, r) in strong_keys if pd.notna(c) else False
+                          for c, b, r in zip(d["_community"], d["_amt_band"], d["_route"]) ]
+band_dev = d.groupby("device_id").agg(
+    band_strong_order_cnt=("_in_strong_band", "sum"),
+    band_total_orders=("order_no", "count")).reset_index()
+band_dev["band_strong_ratio"] = band_dev["band_strong_order_cnt"] / band_dev["band_total_orders"]
+band_dev = band_dev.set_index("device_id")[["band_strong_order_cnt", "band_strong_ratio"]]
+print(f"  涉及设备: {(band_dev['band_strong_order_cnt']>0).sum()}, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 4. 特征族③：自动化操作链
+
+下单→支付秒级占比 / 支付间隔变异 / 退款整点对齐。
+##CODE##
+print("[4/5] 特征族③: 自动化操作链")
+t0 = time.time()
+
+d["_create_pay_sec"] = (d["pay_time"] - d["create_time"]).dt.total_seconds()
+d["_pay_sec_aligned"] = d["pay_time"].dt.second.isin([0, 30])  # 整秒/半分钟对齐
+d["_refund_sec0"] = d["refund_apply_time"].dt.second == 0
+
+rows3 = {}
+for dev, g in d.groupby("device_id"):
+    cp = g["_create_pay_sec"].dropna()
+    cp_pos = cp[cp >= 0]
+    n_pay = len(cp_pos)
+    rows3[dev] = {
+        # 自动支付器
+        "auto_pay_le3sec_cnt": int((cp_pos <= 3).sum()),
+        "auto_pay_le3sec_ratio": (cp_pos <= 3).mean() if n_pay else np.nan,
+        "auto_create_pay_cv": cp_pos.std() / cp_pos.mean() if n_pay > 2 and cp_pos.mean() > 0 else np.nan,
+        # 支付时间整点对齐（脚本触发）
+        "auto_pay_aligned_ratio": g["_pay_sec_aligned"].mean() if g["pay_time"].notna().any() else np.nan,
+        # 退款整点对齐
+        "auto_refund_sec0_ratio": g["_refund_sec0"].mean() if g["refund_apply_time"].notna().any() else np.nan,
+    }
+feat3 = pd.DataFrame.from_dict(rows3, orient="index")
+feat3.index.name = "device_id"
+print(f"  完成 {feat3.shape[1]} 列, 耗时 {time.time()-t0:.1f}s")
+print(f"  秒级支付(<=3s>=3单)设备: {((feat3['auto_pay_le3sec_cnt']>=3)).sum()}")
+feat3.head(3)
+##MD##
+## 5. 合并输出 + 设备/社区打标
+
+三族特征合并输出 detail_device_features_v2.csv；
+设备级新标签（套利嫌疑/档位聚集/自动支付器）+ 社区级新标签合并进 community_risk_tags.csv。
+##CODE##
+print("[5/5] 合并输出与打标")
+t0 = time.time()
+
+feat = feat1.join(band_dev, how="outer").join(feat3, how="outer")
+feat = feat.reset_index()
+feat.to_csv(os.path.join(OUT, "detail_device_features_v2.csv"), index=False, encoding="utf-8")
+
+# ---- 设备级新标签 ----
+feat["_tag_arb"] = ((feat["arb_fast_full_cnt"] >= 2) |
+                     ((feat["arb_full_refund_ratio"] >= 0.5) & (feat["arb_has_refund"] >= 5)))
+feat["_tag_band"] = feat["band_strong_order_cnt"] >= 3
+feat["_tag_auto"] = feat["auto_pay_le3sec_cnt"] >= 3
+print(f"设备标签: 套利嫌疑 {int(feat['_tag_arb'].sum())} | 档位聚集 {int(feat['_tag_band'].sum())} | 自动支付 {int(feat['_tag_auto'].sum())}")
+
+# ---- 社区级: 合并进 community_risk_tags.csv ----
+tags_path = os.path.join(OUT, "community_risk_tags.csv")
+ct = pd.read_csv(tags_path, dtype=str, encoding="utf-8-sig")
+ct["community_id"] = pd.to_numeric(ct["community_id"], errors="coerce").astype("Int64")
+
+feat2 = feat.copy()
+feat2["_community"] = feat2["device_id"].map(dev2comm)
+cg = feat2[feat2["_community"].notna()].groupby("_community").agg(
+    arb_devices=("_tag_arb", "sum"), band_devices=("_tag_band", "sum"),
+    auto_devices=("_tag_auto", "sum"), dev_n=("device_id", "count")).reset_index()
+cg["_community"] = cg["_community"].astype(int)
+
+ct = ct.merge(cg[["_community", "arb_devices", "band_devices", "auto_devices"]],
+              left_on="community_id", right_on="_community", how="left").drop(columns=["_community"])
+for c in ["arb_devices", "band_devices", "auto_devices"]:
+    ct[c] = pd.to_numeric(ct[c], errors="coerce").fillna(0).astype(int)
+
+def _append_tags(r):
+    tags = str(r["risk_tags"]) if pd.notna(r["risk_tags"]) and r["risk_tags"] != "未命中" else ""
+    add = []
+    if r["arb_devices"] >= 1:
+        add.append(f"套利嫌疑({int(r['arb_devices'])}台)")
+    if r["band_devices"] >= 2:
+        add.append(f"金额档位聚集({int(r['band_devices'])}台)")
+    if r["auto_devices"] >= 2:
+        add.append(f"自动支付器({int(r['auto_devices'])}台)")
+    merged = (tags + " | " if tags else "") + " | ".join(add)
+    return merged if merged else "未命中"
+ct["risk_tags"] = ct.apply(_append_tags, axis=1)
+ct.to_csv(tags_path, index=False, encoding="utf-8-sig")
+print(f"社区标签已更新: 新增套利标签社区 {(ct['arb_devices']>=1).sum()} 个 / 档位聚集 {(ct['band_devices']>=2).sum()} / 自动支付 {(ct['auto_devices']>=2).sum()}")
+print(f"\n全部输出: detail_device_features_v2.csv / community_risk_tags.csv (更新)")
+print(f"耗时 {time.time()-t0:.1f}s")

@@ -1,0 +1,140 @@
+##MD##
+# 07 航线聚集团伙图谱 + 双图融合（方向④）
+
+**思路**:
+- 构图 A（已有）: 设备↔实体（IP/证件/手机/userId）——Leiden 实体图
+- 构图 B（新）: 设备↔航线 —— 共享航线（同航线订单量>=阈值）的设备间接连通
+- 融合: A∩B 交集社区 = **高置信团伙**（实体关联+行为指纹双确认）；
+        只在 B 的设备 = 换马甲嫌疑（实体换了但航线习惯不变）
+
+**输出**: route_graph_communities.csv（航线图社区）+ fused_gangs.csv（双图融合高置信团伙）
+> 输入: data/26.08.27_detail.csv + model_output/device_community.csv
+##CODE##
+import os, time
+from collections import defaultdict
+import numpy as np
+import pandas as pd
+import igraph as ig
+import leidenalg
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+print("[1/4] 加载明细与实体图社区")
+t0 = time.time()
+d = pd.read_csv(os.path.join(DATA, "26.08.27_detail.csv"), dtype=str, encoding="utf-8",
+                usecols=["device_id", "dep_city", "arr_city", "order_no"])
+d = d[d["dep_city"].notna() & d["arr_city"].notna()]
+d["_route"] = d["dep_city"] + "→" + d["arr_city"]
+print(f"  明细 {len(d)} 行, 设备 {d['device_id'].nunique()}, 耗时 {time.time()-t0:.1f}s")
+
+# 实体图社区（构图 A 的结果）
+dc = pd.read_csv(os.path.join(OUT, "device_community.csv"), dtype=str,
+                 usecols=["node", "node_type", "community_id"])
+dev_comm = dc[dc["node_type"] == "device"].copy()
+dev_comm["community_id"] = pd.to_numeric(dev_comm["community_id"], errors="coerce")
+dev2commA = dict(zip(dev_comm["node"], dev_comm["community_id"]))
+print(f"  实体图设备 {len(dev2commA)}")
+##MD##
+## 2. 构图 B：设备↔航线二部图 + Leiden
+
+设备—航线二部图（航线节点 route::XXX），共享航线的设备连通。
+##CODE##
+print("[2/4] 构建航线二部图")
+t0 = time.time()
+
+# 设备×航线订单量
+dr = d.groupby(["device_id", "_route"]).size().reset_index(name="cnt")
+# [TUNABLE] 设备在一条航线上的最低订单数（防噪音边）: 5 单起
+# 低于 2 会因热门航线形成 2000+ 台的巨型社区（商业热线是天然枢纽不是团伙信号）
+dr = dr[dr["cnt"] >= 5]
+# [TUNABLE] 枢纽航线过滤: 被 >30 台设备共享的航线剔除（商业热线噪音）
+route_dev_cnt = dr.groupby("_route")["device_id"].nunique()
+hub_routes = set(route_dev_cnt[route_dev_cnt > 30].index)
+dr = dr[~dr["_route"].isin(hub_routes)]
+print(f"  设备-航线边（>=5单, 剔除{len(hub_routes)}条枢纽航线）: {len(dr)} 条, 涉及设备 {dr['device_id'].nunique()}")
+
+dev_nodes = sorted(dr["device_id"].unique())
+route_nodes = sorted(dr["_route"].unique())
+route_nodes_prefixed = ["route::" + r for r in route_nodes]
+all_nodes = dev_nodes + route_nodes_prefixed
+node2id = {n: i for i, n in enumerate(all_nodes)}
+el = list(zip(dr["device_id"].map(node2id), ("route::" + dr["_route"]).map(node2id)))
+ew = dr["cnt"].tolist()
+print(f"  图节点 {len(all_nodes)} (设备 {len(dev_nodes)} + 航线 {len(route_nodes)}), 边 {len(el)}")
+
+G = ig.Graph(n=len(all_nodes), edges=el, directed=False)
+G.es["weight"] = ew
+partition = leidenalg.find_partition(G, leidenalg.ModularityVertexPartition,
+                                     weights="weight", seed=42)
+membership = partition.membership
+print(f"  航线图 Leiden 完成: {len(set(membership))} 社区, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 3. 航线图社区规模统计
+
+过滤小社区（设备数 >= 3）。
+##CODE##
+print("[3/4] 社区统计")
+node_comm = {n: membership[node2id[n]] for n in dev_nodes}
+comm_size = defaultdict(int)
+for n, c in node_comm.items():
+    comm_size[c] += 1
+# [TUNABLE] 最小航线图社区设备数
+MIN_ROUTE_COMM = 3
+valid_comms = {c for c, s in comm_size.items() if s >= MIN_ROUTE_COMM}
+print(f"  有效社区（>= {MIN_ROUTE_COMM} 设备）: {len(valid_comms)} / {len(comm_size)}")
+print(f"  最大航线社区: {max(comm_size.values())} 设备")
+##MD##
+## 4. 双图融合
+
+A（实体图）∩ B（航线图）社区对齐：
+- 同一航线社区内的设备大部分落在同一实体社区 → 高置信团伙
+- 航线社区内的设备分散在不同实体社区/无实体社区 → 换马甲嫌疑组
+输出 route_graph_communities.csv + fused_gangs.csv
+##CODE##
+print("[4/4] 双图融合")
+t0 = time.time()
+
+# 06 的套利标签（融合信号）
+f2 = pd.read_csv(os.path.join(OUT, "detail_device_features_v2.csv"))
+f2["tag_arb"] = ((f2["arb_fast_full_cnt"] >= 2) |
+                 ((f2["arb_full_refund_ratio"] >= 0.5) & (f2["arb_has_refund"] >= 5)))
+arb_devs = set(f2[f2["tag_arb"]]["device_id"].astype(str))
+
+rows = []
+for rc in valid_comms:
+    devs = [n for n, c in node_comm.items() if c == rc]
+    commA_ids = [dev2commA.get(x) for x in devs]
+    n_in_A = sum(1 for x in commA_ids if pd.notna(x))
+    commA_count = pd.Series([x for x in commA_ids if pd.notna(x)]).value_counts()
+    top_A = int(commA_count.index[0]) if len(commA_count) else -1
+    top_A_ratio = commA_count.iloc[0] / len(devs) if len(commA_count) else 0
+    arb_rate = sum(1 for x in devs if x in arb_devs) / len(devs)
+    # [TUNABLE] 高置信: (a)与实体社区>=40%重合 或 (b)套利设备>=30%（换马甲但行为指纹一致）
+    # 大社区(>50台)多为"航线偏好群体"（如专做深圳线的代理），不算团伙——限定 3-50 台
+    is_hc = len(devs) <= 50 and (top_A_ratio >= 0.4 or arb_rate >= 0.3)
+    rows.append({
+        "route_community_id": rc,
+        "device_cnt": len(devs),
+        "in_entity_graph_cnt": n_in_A,
+        "top_entity_community": top_A,
+        "top_entity_ratio": round(float(top_A_ratio), 3),
+        "arb_device_ratio": round(float(arb_rate), 3),
+        "is_high_confidence": int(is_hc),
+        "devices": "|".join(devs[:50]),
+    })
+rg = pd.DataFrame(rows).sort_values("device_cnt", ascending=False)
+rg.to_csv(os.path.join(OUT, "route_graph_communities.csv"), index=False, encoding="utf-8-sig")
+
+n_hc = int(rg["is_high_confidence"].sum())
+print(f"  航线社区总数 {len(rg)}, 高置信（与实体社区>=60%重合）: {n_hc}")
+print(f"  Top5 航线社区:")
+for _, r in rg.head(5).iterrows():
+    print(f"    航线社区 {r['route_community_id']}: {r['device_cnt']}台, 对齐实体社区 {r['top_entity_community']} ({r['top_entity_ratio']*100:.0f}%), 高置信={r['is_high_confidence']}")
+
+# 融合团伙表（高置信航线社区 → 实体社区 ID 映射）
+fused = rg[rg["is_high_confidence"] == 1][["route_community_id", "device_cnt", "top_entity_community", "top_entity_ratio"]]
+fused = fused.rename(columns={"top_entity_community": "entity_community_id"})
+fused.to_csv(os.path.join(OUT, "fused_gangs.csv"), index=False, encoding="utf-8-sig")
+print(f"\n  输出: route_graph_communities.csv / fused_gangs.csv (高置信团伙 {len(fused)} 个)")
+print(f"  耗时 {time.time()-t0:.1f}s")
