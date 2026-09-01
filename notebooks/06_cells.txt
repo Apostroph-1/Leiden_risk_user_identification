@@ -182,6 +182,10 @@ cg = feat2[feat2["_community"].notna()].groupby("_community").agg(
     auto_devices=("_tag_auto", "sum"), dev_n=("device_id", "count")).reset_index()
 cg["_community"] = cg["_community"].astype(int)
 
+# 先剔除旧表的设备数列（重跑时避免 _x/_y 重名列）
+for _c in ["arb_devices", "band_devices", "auto_devices"]:
+    if _c in ct.columns:
+        ct = ct.drop(columns=[_c])
 ct = ct.merge(cg[["_community", "arb_devices", "band_devices", "auto_devices"]],
               left_on="community_id", right_on="_community", how="left").drop(columns=["_community"])
 for c in ["arb_devices", "band_devices", "auto_devices"]:

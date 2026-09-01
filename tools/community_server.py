@@ -875,6 +875,9 @@ class GraphEngine:
         # ---- 接入离线风险标签表 + 机器行为表（detail 数据派生）----
         rt = self._load_risk_tags()
         if rt is not None:
+            # refund_rate 用 tags 表的 v2 修正口径（宽表 status 口径已知低估 22%）
+            if "refund_rate" in result.columns:
+                result = result.drop(columns=["refund_rate"])
             result = result.merge(rt[["community_id", "risk_tags", "tag_cnt", "machine_devices",
                                        "machine_rate", "fast_refund_devices", "comp_rate",
                                        "refund_rate", "scalper_rate"]],
