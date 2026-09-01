@@ -210,22 +210,6 @@ svg.graph:active{cursor:grabbing}
 <button class="btn" style="padding:6px 14px" onclick="jumpAnalysisPage()">GO</button>
 </div>
 <div id="analysisCommSummary" style="margin-top:16px;display:none;border:1px solid #dbe4f0;border-radius:8px;background:#f4f8fd;padding:12px 14px"></div>
-<div id="analysisDetail" style="margin-top:16px;display:none">
-<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="analysisDetailCommId"></span> 设备明细</h3>
-<div style="overflow-x:auto">
-<table id="analysisDetailTable" style="font-size:12px">
-<thead><tr>
-<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
-</tr></thead>
-<tbody id="analysisDetailTbody"></tbody>
-</table>
-</div>
-<div class="pagination">
-<button class="btn" id="analysisDetailPrev" onclick="changeAnalysisDetailPage(-1)">上一页</button>
-<span id="analysisDetailPageNum" style="font-size:13px"></span>
-<button class="btn" id="analysisDetailNext" onclick="changeAnalysisDetailPage(1)">下一页</button>
-</div>
-</div>
 <div id="analysisDrillDown" style="margin-top:16px;display:none">
 <h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">设备 <span id="analysisDrillDownDeviceId"></span> 下钻明细</h3>
 <div style="display:flex;gap:16px;flex-wrap:wrap">
@@ -247,6 +231,22 @@ svg.graph:active{cursor:grabbing}
 <h4 style="font-size:13px;color:#B07AA1;margin-bottom:4px">乘机人手机 (<span id="analysisDrillDownMobileCnt">0</span>)</h4>
 <div id="analysisDrillDownMobiles" style="max-height:200px;overflow-y:auto;font-size:12px;padding:8px;background:#f8f9fa;border-radius:6px;border:1px solid #e0e0e0"></div>
 </div>
+</div>
+</div>
+<div id="analysisDetail" style="margin-top:16px;display:none">
+<h3 style="font-size:15px;margin-bottom:8px;color:#4E79A7">社区 <span id="analysisDetailCommId"></span> 设备明细</h3>
+<div style="overflow:auto;max-height:520px">
+<table id="analysisDetailTable" style="font-size:12px">
+<thead><tr>
+<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
+</tr></thead>
+<tbody id="analysisDetailTbody"></tbody>
+</table>
+</div>
+<div class="pagination">
+<button class="btn" id="analysisDetailPrev" onclick="changeAnalysisDetailPage(-1)">上一页</button>
+<span id="analysisDetailPageNum" style="font-size:13px"></span>
+<button class="btn" id="analysisDetailNext" onclick="changeAnalysisDetailPage(1)">下一页</button>
 </div>
 </div>
 </div>
@@ -780,6 +780,8 @@ async function loadAnalysisDeviceDrillDown(deviceId){
   }catch(e){
     document.getElementById("analysisDrillDownUsers").innerHTML='<span class="error">请求失败</span>';
   }
+  // 点击设备后自动滚到下钻区块（紧贴社区汇总卡与设备明细之后，无需手动翻页）
+  document.getElementById("analysisDrillDown").scrollIntoView({behavior:"smooth",block:"start"});
 }
 
 function changeAnalysisDetailPage(d){analysisDetailPage=Math.max(1,analysisDetailPage+d);loadAnalysisDetail();}
