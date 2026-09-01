@@ -68,8 +68,10 @@ class GraphEngine:
         d = pd.read_csv(detail_path, dtype=str, encoding="utf-8",
                         usecols=["device_id", "order_no", "create_time", "pay_time",
                                  "refund_apply_time", "ip", "order_amount", "status"])
+        # 明细时间格式混杂（标准 'YYYY-MM-DD HH:MM:SS' 与毫秒版并存），
+        # 必须 format='mixed' 逐行解析，否则 pandas 按单一格式推断会把另一种全 coerce 成 NaT
         for c in ["create_time", "pay_time", "refund_apply_time"]:
-            d[c] = pd.to_datetime(d[c], errors="coerce")
+            d[c] = pd.to_datetime(d[c], errors="coerce", format="mixed")
         d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
         d["date"] = d["create_time"].dt.strftime("%Y-%m-%d")
         # 只留有下单时间的
