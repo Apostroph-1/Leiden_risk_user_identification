@@ -164,6 +164,8 @@ svg.graph:active{cursor:grabbing}
 <option value="device">按设备数排序</option>
 <option value="scalper">按黄牛单量排序</option>
 <option value="intercept">按拦截单量排序</option>
+<option value="tags">按风险标签数排序</option>
+<option value="machine">按机器设备数排序</option>
 </select>
 <select id="analysisDir" onchange="loadAnalysis()">
 <option value="desc">降序</option>
@@ -175,7 +177,7 @@ svg.graph:active{cursor:grabbing}
 <div style="overflow-x:auto">
 <table id="analysisTable" style="font-size:12px">
 <thead><tr>
-<th>社区ID</th><th>行为类型</th><th>设备数</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>退款率</th><th>赔付率</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>证件数</th><th>IP数</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>判断依据</th>
+<th>社区ID</th><th>行为类型</th><th>风险标签</th><th>机器设备</th><th>设备数</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>退款率</th><th>赔付率</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>证件数</th><th>IP数</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>判断依据</th>
 </tr></thead>
 <tbody id="analysisTbody"></tbody>
 </table>
@@ -683,16 +685,24 @@ async function loadAnalysis(){
   const sort=document.getElementById("analysisSort").value;
   const dir=document.getElementById("analysisDir").value;
   const d=await api("/api/community_analysis?page="+analysisPage+"&size="+analysisSize+"&sort="+sort+"&dir="+dir);
-  if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="18">'+esc(d.error)+'</td></tr>';return;}
+  if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="20">'+esc(d.error)+'</td></tr>';return;}
   analysisTotal=d.total;
   const tbody=document.getElementById("analysisTbody");
   tbody.innerHTML=d.communities.map(c=>{
     const badges=(c.behavior_labels||[]).map(l=>'<span class="tag" style="background:'+l.color+';margin:2px">'+esc(l.label)+'</span>').join(" ");
     const reasons=(c.behavior_labels||[]).map(l=>'<div style="font-size:11px;color:#666">'+esc(l.reason)+'</div>').join("");
     const hrTag=c.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'';
+    const rtTags=(c.risk_tags&&c.risk_tags!=='未命中')?c.risk_tags.split(' | ').map(t=>{
+      const mch=t.includes('机器');const sc=t.includes('黄牛');const cf=t.includes('赔付');
+      const color=mch?'#E15759':(sc?'#F28E2B':(cf?'#B07AA1':'#76B7B2'));
+      return '<span style="display:inline-block;margin:1px;padding:1px 5px;font-size:11px;border-radius:3px;background:'+color+'22;color:'+color+';border:1px solid '+color+'66">'+esc(t)+'</span>';
+    }).join(" "):'<span style="color:#999">-</span>';
+    const machCnt=c.machine_devices!=null?c.machine_devices:'-';
     return '<tr style="cursor:pointer" onclick="viewAnalysisDetail('+c.community_id+')">'
       +'<td><b>'+c.community_id+'</b> '+hrTag+'</td>'
       +'<td>'+badges+'</td>'
+      +'<td style="max-width:340px">'+rtTags+'</td>'
+      +'<td style="color:'+(machCnt>0?'#E15759':'#999')+';font-weight:'+(machCnt>0?'700':'400')+'">'+machCnt+'</td>'
       +'<td>'+(c.device_cnt||0)+'</td>'
       +'<td>'+(c.flight_total_order_cnt||0)+'</td>'
       +'<td>'+fmtAmt(c.flight_pay_ok_order_amount)+'</td>'
@@ -733,7 +743,7 @@ async function viewAnalysisDetail(commId){
 async function loadAnalysisDetail(){
   if(currentAnalysisCommId===null)return;
   const d=await api("/api/community_detail/"+currentAnalysisCommId+"?page="+analysisDetailPage+"&size="+analysisDetailSize+"&sort=pay_tool");
-  if(d.error){document.getElementById("analysisDetailTbody").innerHTML='<tr><td colspan="18">'+esc(d.error)+'</td></tr>';return;}
+  if(d.error){document.getElementById("analysisDetailTbody").innerHTML='<tr><td colspan="20">'+esc(d.error)+'</td></tr>';return;}
   analysisDetailTotal=d.total;
   const tbody=document.getElementById("analysisDetailTbody");
   tbody.innerHTML=d.devices.map(r=>{

@@ -56,6 +56,9 @@ class GraphEngine:
         self.merged_df = None
         # 明细行为流水（时序可视化用，懒加载）
         self.detail_df = None
+        # 社区风险标签表 + 机器行为表（懒加载）
+        self.risk_tags_df = None
+        self.machine_df = None
         self._loaded = False
 
     def _load_detail(self):
@@ -555,6 +558,33 @@ class GraphEngine:
         }
 
 
+    def _load_risk_tags(self):
+        """懒加载社区风险标签表（community_risk_tags.csv）"""
+        if self.risk_tags_df is not None:
+            return self.risk_tags_df
+        p = os.path.join(self.out_dir, "community_risk_tags.csv")
+        if not os.path.exists(p):
+            return None
+        t = pd.read_csv(p, dtype=str, encoding="utf-8-sig")
+        t["community_id"] = pd.to_numeric(t["community_id"], errors="coerce").astype("Int64")
+        t = t[t["community_id"].notna()]
+        t["community_id"] = t["community_id"].astype(int)
+        # 标签数（排序用）
+        t["tag_cnt"] = t["risk_tags"].apply(lambda s: 0 if s == "未命中" else len(str(s).split(" | ")))
+        self.risk_tags_df = t
+        return t
+
+    def _load_machine(self):
+        """懒加载机器行为设备表（machine_behavior_devices.csv）"""
+        if self.machine_df is not None:
+            return self.machine_df
+        p = os.path.join(self.out_dir, "machine_behavior_devices.csv")
+        if not os.path.exists(p):
+            return None
+        m = pd.read_csv(p, dtype=str, encoding="utf-8-sig")
+        self.machine_df = m
+        return m
+
     def get_community_timeseries(self, comm_id, max_devices=150):
         """社区时序相似性数据（SynchroTrap 风格可视化）
         返回: 社区内设备 x 日期的行为矩阵 + 每设备的 IP 集合
@@ -690,13 +720,28 @@ class GraphEngine:
                     "reason": "当前指标无法明确归类, 需补充交易级数据"})
             labels_list.append(labels)
         result["behavior_labels"] = labels_list
-        # Sort
+        # ---- 接入离线风险标签表 + 机器行为表（detail 数据派生）----
+        rt = self._load_risk_tags()
+        if rt is not None:
+            result = result.merge(rt[["community_id", "risk_tags", "tag_cnt", "machine_devices",
+                                       "machine_rate", "fast_refund_devices", "comp_rate",
+                                       "refund_rate", "scalper_rate"]],
+                                  on="community_id", how="left")
+            result["risk_tags"] = result["risk_tags"].fillna("未命中")
+            result["tag_cnt"] = result["tag_cnt"].fillna(0).astype(int)
+        else:
+            result["risk_tags"] = "未命中"
+            result["tag_cnt"] = 0
+        # Sort（新增: tags=标签数排序 / machine=机器设备数排序）
         sort_map = {"comp": "flight_comp_total_amount", "refund": "flight_refund_amount",
                      "order": "flight_total_order_cnt", "device": "device_cnt",
-                     "scalper": "flight_scalper_cnt", "intercept": "flight_intercept_cnt"}
+                     "scalper": "flight_scalper_cnt", "intercept": "flight_intercept_cnt",
+                     "tags": "tag_cnt", "machine": "machine_devices"}
         sc_col = sort_map.get(sort_by, "flight_comp_total_amount")
         if sc_col not in result.columns:
             sc_col = "device_cnt"
+        if sc_col == "machine_devices":
+            result["machine_devices"] = result.get("machine_devices", pd.Series(dtype=float)).fillna(0)
         result = result.sort_values(sc_col, ascending=(sort_dir != "desc"))
         total = len(result)
         start = (page - 1) * size
