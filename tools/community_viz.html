@@ -193,6 +193,25 @@ svg.graph:active{cursor:grabbing}
 <span style="flex:1"></span>
 <span id="analysisPageInfo" style="font-size:13px;color:#666"></span>
 </div>
+<div id="analysisTagFilter" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;padding:8px 10px;background:#fafbfd;border:1px solid #e5eaf2;border-radius:8px">
+<span style="font-size:12px;color:#666">标签筛选：</span>
+<span class="tagf" data-tag="全部" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #4E79A7;background:#4E79A7;color:#fff">全部</span>
+<span class="tagf" data-tag="批量机器操作" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #E15759;color:#E15759">批量机器操作</span>
+<span class="tagf" data-tag="机器退款" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #E15759;color:#E15759">机器退款</span>
+<span class="tagf" data-tag="自动支付器" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #E15759;color:#E15759">自动支付器</span>
+<span class="tagf" data-tag="黄牛倒票" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #F28E2B;color:#F28E2B">黄牛倒票</span>
+<span class="tagf" data-tag="套利" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #B07AA1;color:#B07AA1">套利嫌疑/赔付套利</span>
+<span class="tagf" data-tag="短时批量退款" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #E15759;color:#E15759">短时批量退款</span>
+<span class="tagf" data-tag="高频退款" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #E15759;color:#E15759">高频退款</span>
+<span class="tagf" data-tag="金额档位聚集" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #76B7B2;color:#76B7B2">金额档位聚集</span>
+<span class="tagf" data-tag="多账号聚集" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #76B7B2;color:#76B7B2">多账号聚集</span>
+<span class="tagf" data-tag="代金券滥用" style="cursor:pointer;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid #76B7B2;color:#76B7B2">代金券滥用</span>
+<span style="flex:1"></span>
+<span style="font-size:12px;color:#666">机器设备≥</span>
+<input type="number" id="analysisMinMachine" value="0" min="0" style="width:56px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px" onchange="loadAnalysis()">
+<span style="font-size:12px;color:#666">设备数≥</span>
+<input type="number" id="analysisMinDevice" value="0" min="0" style="width:56px;padding:4px 6px;border:1px solid #ddd;border-radius:6px;font-size:12px" onchange="loadAnalysis()">
+</div>
 <div style="overflow-x:auto">
 <table id="analysisTable" style="font-size:12px">
 <thead><tr>
@@ -625,15 +644,42 @@ function searchAnalysisCommunity() {
   viewAnalysisDetail(v);
 }
 
+let analysisTagFilter="全部";
+document.addEventListener("click",function(e){
+  const el=e.target.closest(".tagf");
+  if(!el)return;
+  analysisTagFilter=el.dataset.tag;
+  document.querySelectorAll(".tagf").forEach(x=>{
+    const on=x.dataset.tag===analysisTagFilter;
+    x.style.background=on?(x.dataset.tag==="全部"?"#4E79A7":x.style.color):"transparent";
+    x.style.color=on?"#fff":x.style.borderColor;
+  });
+  analysisPage=1;
+  loadAnalysis();
+});
+
 async function loadAnalysis(){
   const sort=document.getElementById("analysisSort").value;
   const dir=document.getElementById("analysisDir").value;
-  const d=await api("/api/community_analysis?page="+analysisPage+"&size="+analysisSize+"&sort="+sort+"&dir="+dir);
+  // 拉大页量做前端过滤（标签筛选在客户端做，避免 server 端复杂化）
+  const fetchSize=analysisTagFilter==="全部"?analysisSize:500;
+  const d=await api("/api/community_analysis?page="+(analysisTagFilter==="全部"?analysisPage:1)+"&size="+fetchSize+"&sort="+sort+"&dir="+dir);
   if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="20">'+esc(d.error)+'</td></tr>';return;}
-  analysisTotal=d.total;
-  window._analysisRows=d.communities||[];
+  let rows=d.communities||[];
+  // 标签过滤（risk_tags 含关键词）
+  if(analysisTagFilter!=="全部"){
+    rows=rows.filter(c=>String(c.risk_tags||"").includes(analysisTagFilter));
+  }
+  // 数值过滤
+  const minM=parseInt(document.getElementById("analysisMinMachine").value)||0;
+  const minD=parseInt(document.getElementById("analysisMinDevice").value)||0;
+  rows=rows.filter(c=>(c.machine_devices||0)>=minM && (c.device_cnt||0)>=minD);
+  // 统一前端分页：先过滤后切页（标签与数值过滤对所有数据生效）
+  analysisTotal=rows.length;
+  window._analysisRows=rows;
+  rows=rows.slice((analysisPage-1)*analysisSize, analysisPage*analysisSize);
   const tbody=document.getElementById("analysisTbody");
-  tbody.innerHTML=d.communities.map(c=>{
+  tbody.innerHTML=rows.map(c=>{
     const badges=(c.behavior_labels||[]).map(l=>'<span class="tag" style="background:'+l.color+';margin:2px">'+esc(l.label)+'</span>').join(" ");
     const reasons=(c.behavior_labels||[]).map(l=>'<div style="font-size:11px;color:#666">'+esc(l.reason)+'</div>').join("");
     const hrTag=c.is_high_risk_gang?'<span class="tag tag-card">高危</span>':'';
