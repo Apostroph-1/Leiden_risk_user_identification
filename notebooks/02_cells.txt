@@ -130,7 +130,11 @@ def derive_features(df):
     tot = df["flight_total_order_cnt"].replace(0, np.nan)
     pay_ok_amt = df["flight_pay_ok_order_amount"].replace(0, np.nan)
     pay_ok_cnt = df["flight_pay_ok_order_cnt"].replace(0, np.nan)
-    df["refund_rate"] = df["flight_refund_order_cnt"] / tot
+    # 退款率口径修正：flight_refund_order_cnt 线上 status 口径不全（status 5/7/2 的退款单
+    # 不在 39,95,93,31,30 内被计为 0，见 2026-09-01 数据校验）。退款真实计数改用
+    # flight_cardinality_refund_pay_time_diff（退款-支付时间差的不同取值数 ≈ 退款单数）
+    df["_refund_cnt_fixed"] = df[["flight_cardinality_refund_pay_time_diff", "flight_refund_order_cnt"]].max(axis=1)
+    df["refund_rate"] = df["_refund_cnt_fixed"] / tot
     df["refund_amount_rate"] = df["flight_refund_amount"] / pay_ok_amt
     df["comp_amount_rate"] = df["flight_comp_total_amount"] / pay_ok_amt
     df["cancel_rate"] = df["flight_cancel_order_cnt"] / tot
@@ -152,7 +156,7 @@ def derive_features(df):
                                    (df["flight_min_refund_pay_interval_sec"] <= 3600)).astype(int)
     # [TUNABLE] is_machine_refund: 退款单量-时间差多样性>0 且退款率>0.5
     # 影响内容: 差值越大说明退款时间间隔重复值越多, 退款率>0.5排除正常偶发退款
-    df["is_machine_refund"] = ((df["flight_refund_order_cnt"] - df["flight_cardinality_refund_pay_time_diff"] > 0) &
+    df["is_machine_refund"] = ((df["_refund_cnt_fixed"] - df["flight_cardinality_refund_pay_time_diff"] > 0) &
                                 (df["refund_rate"] > 0.5)).astype(int)
     # [TUNABLE] is_night_heavy: 阈值从0.3收紧到0.5 (P95)
     # 影响内容: 阈值越大->命中越少越精准
@@ -223,7 +227,7 @@ def gen_pseudo_labels(df):
     # [TUNABLE] 伪标签规则: 修改阈值会改变正/负样本数量和分布
     # 影响内容: 规则越严格->正样本越少但更纯净; 规则越宽松->正样本越多但噪声大
     strong = (
-        (df["refund_rate"] >= 0.5) & (df["flight_refund_order_cnt"] >= 5)
+        (df["refund_rate"] >= 0.5) & (df["_refund_cnt_fixed"] >= 5)
     ) | (
         (df["flight_comp_total_amount"] >= 500) & (df["flight_distinct_user_id_cnt"] >= 2)
     ) | (
@@ -238,7 +242,7 @@ def gen_pseudo_labels(df):
     # [TUNABLE] 正常样本规则: 修改条件会改变负样本数量
     # 影响内容: 负样本越严格->模型对"正常"的定义越保守
     normal = (
-        (df["flight_refund_order_cnt"] == 0) &
+        (df["_refund_cnt_fixed"] == 0) &
         (df["flight_comp_total_amount"] == 0) &
         (df["flight_distinct_user_id_cnt"] == 1) &
         (df["flight_scalper_cnt"] == 0) &
