@@ -136,7 +136,10 @@ def derive_features(df):
     # 退款率口径修正：flight_refund_order_cnt 线上 status 口径不全（status 5/7/2 的退款单
     # 不在 39,95,93,31,30 内被计为 0，见 2026-09-01 数据校验）。退款真实计数改用
     # flight_cardinality_refund_pay_time_diff（退款-支付时间差的不同取值数 ≈ 退款单数）
-    df["_refund_cnt_fixed"] = df[["flight_cardinality_refund_pay_time_diff", "flight_refund_order_cnt"]].max(axis=1)
+    # fillna(0) 先行：comp 等字段无赔付时是 NaN 不是 0（71.6万台），max 会错误传播 NaN 语义
+    _card = df["flight_cardinality_refund_pay_time_diff"].fillna(0)
+    _roc = df["flight_refund_order_cnt"].fillna(0)
+    df["_refund_cnt_fixed"] = pd.concat([_card, _roc], axis=1).max(axis=1)
     df["refund_rate"] = df["_refund_cnt_fixed"] / tot
     df["refund_amount_rate"] = df["flight_refund_amount"] / pay_ok_amt
     df["comp_amount_rate"] = df["flight_comp_total_amount"] / pay_ok_amt
@@ -232,7 +235,7 @@ def gen_pseudo_labels(df):
     strong = (
         (df["refund_rate"] >= 0.5) & (df["_refund_cnt_fixed"] >= 5)
     ) | (
-        (df["flight_comp_total_amount"] >= 500) & (df["flight_distinct_user_id_cnt"] >= 2)
+        (df["flight_comp_total_amount"].fillna(0) >= 500) & (df["flight_distinct_user_id_cnt"] >= 2)
     ) | (
         df["flight_scalper_cnt"] >= 1
     ) | (
@@ -246,7 +249,7 @@ def gen_pseudo_labels(df):
     # 影响内容: 负样本越严格->模型对"正常"的定义越保守
     normal = (
         (df["_refund_cnt_fixed"] == 0) &
-        (df["flight_comp_total_amount"] == 0) &
+        (df["flight_comp_total_amount"].fillna(0) == 0) &
         (df["flight_distinct_user_id_cnt"] == 1) &
         (df["flight_scalper_cnt"] == 0) &
         (df["flight_intercept_cnt"] == 0) &
