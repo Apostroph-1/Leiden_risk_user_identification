@@ -789,11 +789,13 @@ class GraphEngine:
             })
         return {"device_id": device_id, "total": total, "page": page, "size": size, "orders": orders}
 
-    def get_community_analysis(self, page=1, size=20, sort_by="comp", sort_dir="desc"):
-        """Aggregate communities + classify behavior patterns."""
+    def get_community_analysis(self, page=1, size=20, sort_by="comp", sort_dir="desc", comm_id=None):
+        """Aggregate communities + classify behavior patterns. comm_id 精确查询单社区"""
         if self.merged_df is None:
             return {"total": 0, "page": page, "size": size, "communities": [], "error": "final_merged_output.csv not loaded"}
         df = self.merged_df
+        if comm_id is not None:
+            df = df[df["community_id"] == int(comm_id)]
         sum_cols = [c for c in [
             "flight_total_order_cnt", "flight_pay_ok_order_cnt", "flight_pay_ok_order_amount",
             "flight_pr_total_pay", "flight_refund_amount", "flight_ticket_success_order_cnt",
@@ -979,7 +981,8 @@ class QueryHandler(BaseHTTPRequestHandler):
             size = int(params.get("size", ["20"])[0])
             sort_by = params.get("sort", ["comp"])[0]
             sort_dir = params.get("dir", ["desc"])[0]
-            self._send_json(engine.get_community_analysis(page, size, sort_by, sort_dir))
+            comm_id = params.get("comm_id", [None])[0]
+            self._send_json(engine.get_community_analysis(page, size, sort_by, sort_dir, comm_id))
         else:
             self._send_json({"error": "unknown endpoint"}, 404)
 
