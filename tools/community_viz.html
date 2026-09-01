@@ -76,6 +76,7 @@ svg.graph:active{cursor:grabbing}
 <div class="tab" data-tab="node">节点查询</div>
 <div class="tab" data-tab="analysis">高危分析</div>
 <div class="tab" data-tab="timeseries">时序分析</div>
+<div class="tab" data-tab="internalip" style="background:#E15759;color:#fff">内部IP</div>
 </div>
 <!-- Tab 2: Community Graph -->
 <div class="panel" id="panel-graph">
@@ -142,6 +143,25 @@ svg.graph:active{cursor:grabbing}
 <div class="result-box" id="nodeResult">等待查询...</div>
 </div>
 <!-- Tab: High-Risk Analysis -->
+<div class="panel" id="panel-internalip">
+<div id="ipSummary" style="padding:6px 0;font-size:13px;color:#555">加载中...</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<div style="flex:1;min-width:500px">
+<h4 style="margin:8px 0 4px">命中社区</h4>
+<div style="overflow:auto;max-height:340px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr>
+<th>社区ID</th><th>设备数</th><th>订单数</th><th>内网IP数</th><th>IP分组</th><th>退款单</th><th>金额</th><th></th>
+</tr></thead><tbody id="ipCommTbody"></tbody></table>
+</div>
+<h4 style="margin:12px 0 4px">命中设备明细（全部）</h4>
+<div style="overflow:auto;max-height:420px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr>
+<th>设备ID</th><th>社区ID</th><th>风险等级</th><th>订单数</th><th>IP分组</th><th>首单时间</th><th>末单时间</th><th>退款单</th><th>金额</th>
+</tr></thead><tbody id="ipDevTbody"></tbody></table>
+</div>
+</div>
+</div>
+</div>
 <div class="panel" id="panel-timeseries">
 <div class="filter-bar">
 <input type="number" id="tsCommId" placeholder="输入社区ID..." style="width:140px;padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px" onkeydown="if(event.key==='Enter')loadTimeseries()">
@@ -898,6 +918,42 @@ document.getElementById("tsCanvas").addEventListener("click",async e=>{
   document.getElementById("tsChartWrap").scrollIntoView({block:"start"});
 });
 document.querySelector('[data-tab="timeseries"]').addEventListener("click",()=>{if(!tsData)document.getElementById("tsInfo").textContent="输入社区ID查看时序相似性图";});
+
+// ===================== 内部 IP（黑名单）=====================
+let ipData = null;
+async function loadInternalIp(){
+  if(ipData) return;
+  const d = await api('/api/internal_ip');
+  const s = document.getElementById("ipSummary");
+  if(d.error){s.innerHTML='<span style="color:#E15759">错误: '+esc(d.error)+'</span>';return;}
+  ipData = d;
+  s.innerHTML = `<b style="color:#E15759">内网IP命中：</b>名单 ${d.ip_list_cnt} 个IP，命中 <b>${d.matched_device_cnt}</b> 台设备 / <b>${d.matched_order_cnt}</b> 单 / ${d.matched_ip_cnt||0} 个内网IP` +
+    (d.matched_order_cnt>0?' <span style="color:#E15759;font-weight:700">（内网下单，绝对优先关注）</span>':' <span style="color:#59A14F">（本批无命中）</span>');
+  // 社区表
+  document.getElementById("ipCommTbody").innerHTML = (d.communities||[]).map(c=>
+    `<tr><td><b>${c.community_id}</b></td><td>${c.device_cnt}</td><td>${c.order_cnt}</td><td>${c.ip_cnt}</td>
+     <td style="max-width:220px;font-size:11px">${esc(c.ip_names)}</td><td style="color:#E15759">${c.refund_cnt}</td>
+     <td>${c.amount}</td><td><button class="btn" style="padding:2px 8px;font-size:11px" onclick="ipViewComm(${c.community_id})">时序图</button></td></tr>`
+  ).join("") || '<tr><td colspan="8" style="color:#999">无命中</td></tr>';
+  // 设备表
+  document.getElementById("ipDevTbody").innerHTML = (d.devices||[]).map(v=>
+    `<tr><td style="font-family:monospace">${esc(v.device_id)}</td><td>${v.community_id}</td>
+     <td style="color:${v.risk_level==='高风险'?'#E15759':(v.risk_level==='中风险'?'#F28E2B':'#999')};font-weight:600">${esc(v.risk_level)}</td>
+     <td>${v.order_cnt}</td><td style="max-width:200px;font-size:11px">${esc(v.ip_list)}</td>
+     <td>${v.first_time}</td><td>${v.last_time}</td>
+     <td style="color:#E15759">${v.refund_cnt}</td><td>${v.amount}</td></tr>`
+  ).join("") || '<tr><td colspan="9" style="color:#999">无命中</td></tr>';
+}
+function ipViewComm(id){
+  // 跳时序分析页签并加载该社区
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));
+  document.querySelector('[data-tab="timeseries"]').classList.add("active");
+  document.getElementById("panel-timeseries").classList.add("active");
+  document.getElementById("tsCommId").value=id;
+  loadTimeseries();
+}
+document.querySelector('[data-tab="internalip"]').addEventListener("click",()=>{loadInternalIp();});
 // Auto-load metrics on first tab switch
 document.querySelector('[data-tab="metrics"]').addEventListener("click",()=>{if(metricsTotal===0)loadMetrics();});
 </script>

@@ -59,6 +59,8 @@ class GraphEngine:
         # 社区风险标签表 + 机器行为表（懒加载）
         self.risk_tags_df = None
         self.machine_df = None
+        # 内网 IP 名单（data/IP地址.xlsx，绝不进 git，每次启动读取）
+        self.ip_list_df = None
         self._loaded = False
 
     def _load_detail(self):
@@ -558,6 +560,149 @@ class GraphEngine:
         }
 
 
+    def _load_ip_list(self):
+        """懒加载内网 IP 名单（data/IP地址.xlsx）。
+        不写死任何 IP；文件不存在则返回 None（页签显示无名单）。
+        """
+        if self.ip_list_df is not None:
+            return self.ip_list_df
+        p = os.path.join(os.path.dirname(self.out_dir), "IP地址.xlsx")
+        if not os.path.exists(p):
+            return None
+        try:
+            ip = pd.read_excel(p, dtype=str)
+        except Exception:
+            # openpyxl 缺失时降级用 zipfile 解析
+            try:
+                import zipfile
+                from xml.etree import ElementTree as ET
+                z = zipfile.ZipFile(p)
+                ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+                shared = []
+                if "xl/sharedStrings.xml" in z.namelist():
+                    root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                    for si in root.findall("m:si", ns):
+                        shared.append("".join(t.text or "" for t in si.iter(
+                            "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")))
+                root = ET.fromstring(z.read("xl/worksheets/sheet1.xml"))
+                rows = []
+                for row in root.findall(".//m:row", ns):
+                    cells = []
+                    for c in row.findall("m:c", ns):
+                        v = c.find("m:v", ns)
+                        val = v.text if v is not None else ""
+                        if c.get("t") == "s" and val:
+                            val = shared[int(val)]
+                        cells.append(val)
+                    if len(cells) >= 2 and cells[1] and cells[1].lower() != "ip1":
+                        rows.append({"name": cells[0], "ip": cells[1].strip()})
+                ip = pd.DataFrame(rows)
+            except Exception:
+                return None
+        else:
+            ip = ip.rename(columns={ip.columns[0]: "name", ip.columns[1]: "ip"})
+            ip = ip[ip["ip"].notna() & (ip["ip"].astype(str).str.lower() != "ip1")]
+            ip["ip"] = ip["ip"].astype(str).str.strip()
+        ip = ip.dropna(subset=["ip"]).drop_duplicates(subset=["ip"])
+        # 处理通配行（如 10.90.xxx.xxx / 192.168.xxx.xxx）: 展开为 8 位前缀
+        # 通配行 ip 保持 '10.90.xxx.xxx' 原样，匹配时用前缀逻辑
+        self.ip_list_df = ip[["name", "ip"]]
+        return self.ip_list_df
+
+    def _ip_in_list(self, ip, exact_set, prefix_list, name_map):
+        """IP 是否命中名单：先精确匹配，再通配前缀匹配（10.90.xxx.xxx -> 10.90. 前缀）"""
+        if ip in exact_set:
+            return name_map.get(ip)
+        for pfx, name in prefix_list:
+            if ip.startswith(pfx):
+                return name
+        return None
+
+    def get_internal_ip_stats(self):
+        """内网 IP 命中统计 + 社区聚合 + 全部命中明细"""
+        ip_list = self._load_ip_list()
+        if ip_list is None:
+            return {"error": "IP地址.xlsx not found in data/"}
+        d = self._load_detail()
+        if d is None:
+            return {"error": "26.08.27_detail.csv not found"}
+        # 精确 IP + 通配前缀（xxx.xxx 形式）
+        exact = [ip for ip in ip_list["ip"] if "x" not in ip.lower()]
+        wilds = [(ip, name) for ip, name in zip(ip_list["ip"], ip_list["name"]) if "x" in ip.lower()]
+        # 10.90.xxx.xxx -> 前缀 "10.90."
+        prefix_list = [(".".join(ip.split(".")[:2]) + ".", name) for ip, name in wilds]
+        exact_set = set(exact)
+        name_map = dict(zip(ip_list["ip"], ip_list["name"]))
+        # 命中明细（精确 isin + 逐行通配）
+        dd = d[d["ip"].isin(exact_set)].copy()
+        if prefix_list:
+            rest = d[~d["ip"].isin(exact_set) & d["ip"].notna()].copy()
+            def _wild_match(ip):
+                for pfx, name in prefix_list:
+                    if str(ip).startswith(pfx):
+                        return name
+                return None
+            wm = rest["ip"].apply(_wild_match)
+            rest = rest[wm.notna()].copy()
+            rest["ip"] = rest["ip"].astype(str)
+            dd = pd.concat([dd, rest], ignore_index=True)
+        if dd.empty:
+            return {"ip_list_cnt": len(exact_set), "matched_order_cnt": 0,
+                    "matched_device_cnt": 0, "communities": [], "devices": []}
+        # 社区归属
+        merged = self.merged_df[["device_id", "community_id", "risk_level"]]
+        dd = dd.merge(merged, on="device_id", how="left")
+        dd["ip_name"] = dd["ip"].map(name_map)
+        # 社区聚合
+        comm_g = dd.groupby("community_id").agg(
+            device_cnt=("device_id", "nunique"),
+            order_cnt=("order_no", "count"),
+            ip_cnt=("ip", "nunique"),
+            ip_names=("ip_name", lambda s: "、".join(sorted({x for x in s if isinstance(x, str)})[:3])),
+            refund_cnt=("refund_apply_time", lambda s: s.notna().sum()),
+            amount=("order_amount", "sum"),
+        ).reset_index().sort_values("order_cnt", ascending=False)
+        communities = []
+        for _, r in comm_g.iterrows():
+            communities.append({
+                "community_id": int(r["community_id"]) if pd.notna(r["community_id"]) else -1,
+                "device_cnt": int(r["device_cnt"]), "order_cnt": int(r["order_cnt"]),
+                "ip_cnt": int(r["ip_cnt"]), "ip_names": r["ip_names"],
+                "refund_cnt": int(r["refund_cnt"]), "amount": round(float(r["amount"]), 2),
+            })
+        # 设备级明细（全部命中设备）
+        dev_g = dd.groupby("device_id").agg(
+            community_id=("community_id", "first"),
+            risk_level=("risk_level", "first"),
+            order_cnt=("order_no", "count"),
+            ip_list=("ip_name", lambda s: "、".join(sorted({x for x in s if isinstance(x, str)})[:3])),
+            first_time=("create_time", "min"),
+            last_time=("create_time", "max"),
+            refund_cnt=("refund_apply_time", lambda s: s.notna().sum()),
+            amount=("order_amount", "sum"),
+        ).reset_index().sort_values("order_cnt", ascending=False)
+        devices = []
+        for _, r in dev_g.iterrows():
+            devices.append({
+                "device_id": r["device_id"],
+                "community_id": int(r["community_id"]) if pd.notna(r["community_id"]) else -1,
+                "risk_level": r["risk_level"] if pd.notna(r["risk_level"]) else "-",
+                "order_cnt": int(r["order_cnt"]),
+                "ip_list": r["ip_list"],
+                "first_time": str(r["first_time"])[:19],
+                "last_time": str(r["last_time"])[:19],
+                "refund_cnt": int(r["refund_cnt"]),
+                "amount": round(float(r["amount"]), 2),
+            })
+        return {
+            "ip_list_cnt": len(exact_set),
+            "matched_order_cnt": int(len(dd)),
+            "matched_device_cnt": int(dd["device_id"].nunique()),
+            "matched_ip_cnt": int(dd["ip"].nunique()),
+            "communities": communities,
+            "devices": devices,
+        }
+
     def _load_risk_tags(self):
         """懒加载社区风险标签表（community_risk_tags.csv）"""
         if self.risk_tags_df is not None:
@@ -818,6 +963,8 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/device_detail/"):
             device_id = unquote(path.split("/", 3)[-1])
             self._send_json(engine.get_device_detail(device_id))
+        elif path == "/api/internal_ip":
+            self._send_json(engine.get_internal_ip_stats())
         elif path.startswith("/api/community_timeseries/"):
             comm_id = path.split("/")[-1]
             max_dev = int(params.get("max", ["150"])[0])
