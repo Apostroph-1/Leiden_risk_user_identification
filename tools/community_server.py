@@ -61,6 +61,8 @@ class GraphEngine:
         self.machine_df = None
         # 内网 IP 名单（data/IP地址.xlsx，绝不进 git，每次启动读取）
         self.ip_list_df = None
+        # 航线图社区表（route_graph_communities.csv）
+        self.route_graph_df = None
         self._loaded = False
 
     def _load_detail(self):
@@ -77,7 +79,8 @@ class GraphEngine:
             return None
         d = pd.read_csv(detail_path, dtype=str, encoding="utf-8",
                         usecols=["device_id", "order_no", "create_time", "pay_time",
-                                 "refund_apply_time", "ip", "order_amount", "status"])
+                                 "refund_apply_time", "ip", "order_amount", "status",
+                                 "dep_city", "arr_city"])
         # 明细时间格式混杂（标准 'YYYY-MM-DD HH:MM:SS' 与毫秒版并存），
         # 必须 format='mixed' 逐行解析，否则 pandas 按单一格式推断会把另一种全 coerce 成 NaT
         for c in ["create_time", "pay_time", "refund_apply_time"]:
@@ -565,6 +568,72 @@ class GraphEngine:
         }
 
 
+    def _load_route_graph(self):
+        """懒加载航线图社区表"""
+        if self.route_graph_df is not None:
+            return self.route_graph_df
+        p = os.path.join(self.out_dir, "route_graph_communities.csv")
+        if not os.path.exists(p):
+            return None
+        rg = pd.read_csv(p, dtype=str, encoding="utf-8-sig")
+        for c in ["device_cnt", "in_entity_graph_cnt", "top_entity_community",
+                  "top_entity_ratio", "arb_device_ratio", "is_high_confidence", "route_community_id"]:
+            if c in rg.columns:
+                rg[c] = pd.to_numeric(rg[c], errors="coerce")
+        rg["devices"] = rg["devices"].fillna("")
+        self.route_graph_df = rg
+        return rg
+
+    def get_route_gangs(self):
+        """高置信团伙列表（双图融合）"""
+        rg = self._load_route_graph()
+        if rg is None:
+            return {"error": "route_graph_communities.csv not found"}
+        hc = rg[rg["is_high_confidence"] == 1].sort_values("device_cnt", ascending=False)
+        gangs = []
+        for _, r in hc.iterrows():
+            gangs.append({
+                "route_community_id": int(r["route_community_id"]),
+                "device_cnt": int(r["device_cnt"]),
+                "top_entity_community": int(r["top_entity_community"]) if pd.notna(r["top_entity_community"]) else -1,
+                "top_entity_ratio": round(float(r["top_entity_ratio"]), 3),
+                "arb_device_ratio": round(float(r["arb_device_ratio"]), 3),
+            })
+        return {"total": len(gangs), "gangs": gangs}
+
+    def get_route_gang_flows(self, route_community_id):
+        """指定航线团伙的航线流向数据（dep→arr 聚合，前端流向图用）"""
+        rg = self._load_route_graph()
+        if rg is None:
+            return {"error": "route_graph_communities.csv not found"}
+        row = rg[rg["route_community_id"] == int(route_community_id)]
+        if row.empty:
+            return {"error": f"route community {route_community_id} not found"}
+        devs = set(str(row.iloc[0]["devices"]).split("|"))
+        d = self._load_detail()
+        if d is None:
+            return {"error": "detail not found"}
+        dd = d[d["device_id"].isin(devs)]
+        if dd.empty:
+            return {"error": "no detail data for this gang"}
+        flows = dd.groupby(["dep_city", "arr_city"]).agg(
+            order_cnt=("order_no", "count"),
+            device_cnt=("device_id", "nunique"),
+            amount=("order_amount", "sum"),
+            refund_cnt=("refund_apply_time", lambda s: s.notna().sum()),
+        ).reset_index().sort_values("order_cnt", ascending=False)
+        flow_list = []
+        for _, f in flows.iterrows():
+            flow_list.append({
+                "dep": f["dep_city"], "arr": f["arr_city"],
+                "order_cnt": int(f["order_cnt"]), "device_cnt": int(f["device_cnt"]),
+                "amount": round(float(f["amount"]), 2) if pd.notna(f["amount"]) else 0,
+                "refund_cnt": int(f["refund_cnt"]),
+            })
+        return {"route_community_id": int(route_community_id),
+                "device_cnt": int(row.iloc[0]["device_cnt"]),
+                "flows": flow_list}
+
     def _load_ip_list(self):
         """懒加载内网 IP 名单（data/IP地址.xlsx）。
         不写死任何 IP；文件不存在则返回 None（页签显示无名单）。
@@ -979,6 +1048,11 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/device_detail/"):
             device_id = unquote(path.split("/", 3)[-1])
             self._send_json(engine.get_device_detail(device_id))
+        elif path == "/api/route_gangs":
+            self._send_json(engine.get_route_gangs())
+        elif path.startswith("/api/route_gang_flows/"):
+            rcid = path.split("/")[-1]
+            self._send_json(engine.get_route_gang_flows(rcid))
         elif path == "/api/internal_ip":
             self._send_json(engine.get_internal_ip_stats())
         elif path.startswith("/api/community_timeseries/"):

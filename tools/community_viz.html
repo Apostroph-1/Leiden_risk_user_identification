@@ -76,6 +76,7 @@ svg.graph:active{cursor:grabbing}
 <div class="tab active" data-tab="analysis">高危分析</div>
 <div class="tab" data-tab="timeseries">时序分析</div>
 <div class="tab" data-tab="internalip" style="background:#E15759;color:#fff">内部IP</div>
+<div class="tab" data-tab="routegang">航线团伙</div>
 </div>
 <!-- Tab 2: Community Graph -->
 <div class="panel" id="panel-graph">
@@ -157,6 +158,31 @@ svg.graph:active{cursor:grabbing}
 <table class="data-table" style="font-size:12px"><thead><tr>
 <th>设备ID</th><th>社区ID</th><th>风险等级</th><th>订单数</th><th>IP分组</th><th>首单时间</th><th>末单时间</th><th>退款单</th><th>金额</th>
 </tr></thead><tbody id="ipDevTbody"></tbody></table>
+</div>
+</div>
+</div>
+</div>
+<div class="panel" id="panel-routegang">
+<div id="rgSummary" style="padding:6px 0;font-size:13px;color:#555">加载中...</div>
+<div style="display:flex;gap:16px;flex-wrap:wrap">
+<div style="width:340px;max-height:700px;overflow:auto">
+<h4 style="margin:8px 0 4px">高置信团伙（双图融合）</h4>
+<div style="overflow:auto;max-height:300px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr>
+<th>航线团伙</th><th>设备数</th><th>实体社区</th><th>套利率</th>
+</tr></thead><tbody id="rgGangTbody"></tbody></table>
+</div>
+<h4 style="margin:12px 0 4px">航线明细</h4>
+<div style="overflow:auto;max-height:320px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr>
+<th>出发</th><th>到达</th><th>订单数</th><th>设备数</th><th>退款单</th><th>金额</th>
+</tr></thead><tbody id="rgFlowTbody"></tbody></table>
+</div>
+</div>
+<div style="flex:1;min-width:600px">
+<h4 style="margin:8px 0 4px">团伙航线流向图（左=出发地 蓝 / 右=到达地 橙 / 弧线粗细=订单量）</h4>
+<div style="border:1px solid #eee;border-radius:8px;background:#fff;overflow:auto">
+<svg id="rgSvg" width="100%" height="640" style="display:block"></svg>
 </div>
 </div>
 </div>
@@ -959,6 +985,90 @@ function ipViewComm(id){
   loadTimeseries();
 }
 document.querySelector('[data-tab="internalip"]').addEventListener("click",()=>{loadInternalIp();});
+
+// ===================== 航线团伙（双图融合可视化）=====================
+let rgGangs = null, rgFlowData = null;
+async function loadRouteGangs(){
+  if(rgGangs) return;
+  const d = await api('/api/route_gangs');
+  const s = document.getElementById("rgSummary");
+  if(d.error){s.innerHTML='<span style="color:#E15759">错误: '+esc(d.error)+'</span>';return;}
+  rgGangs = d;
+  s.innerHTML = `<b>双图融合高置信团伙：</b>${d.total} 个（实体图对齐≥40% 或 套利设备≥30%）——航线习惯与实体关联/套利行为双重确认的换马甲团伙候选`;
+  document.getElementById("rgGangTbody").innerHTML = (d.gangs||[]).map(g=>
+    `<tr style="cursor:pointer" onclick="loadGangFlows(${g.route_community_id})">
+     <td><b>${g.route_community_id}</b></td><td>${g.device_cnt}</td>
+     <td>${g.top_entity_community}</td>
+     <td style="color:${g.arb_device_ratio>0?'#E15759':'#999'}">${(g.arb_device_ratio*100).toFixed(0)}%</td></tr>`
+  ).join("");
+  if(d.gangs && d.gangs.length) loadGangFlows(d.gangs[0].route_community_id);
+}
+async function loadGangFlows(rcid){
+  document.getElementById("rgFlowTbody").innerHTML='<tr><td colspan="6" style="color:#999">加载中...</td></tr>';
+  const d = await api('/api/route_gang_flows/'+rcid);
+  if(d.error){document.getElementById("rgFlowTbody").innerHTML='<tr><td colspan="6">'+esc(d.error)+'</td></tr>';return;}
+  rgFlowData = d;
+  document.getElementById("rgFlowTbody").innerHTML = (d.flows||[]).map(f=>
+    `<tr><td><b style="color:#4E79A7">${esc(f.dep)}</b></td><td><b style="color:#F28E2B">${esc(f.arr)}</b></td>
+     <td>${f.order_cnt}</td><td>${f.device_cnt}</td>
+     <td style="color:#E15759">${f.refund_cnt}</td><td>${f.amount}</td></tr>`
+  ).join("") || '<tr><td colspan="6" style="color:#999">无数据</td></tr>';
+  drawRouteFlows();
+}
+// 桑基式流向图：左列出发地（蓝），右列到达地（橙），贝塞尔弧线连接，粗细=订单量
+function drawRouteFlows(){
+  const svg = document.getElementById("rgSvg");
+  if(!rgFlowData || !rgFlowData.flows || !rgFlowData.flows.length){svg.innerHTML='';return;}
+  const flows = rgFlowData.flows.slice(0, 40);  // 最多画 40 条防过密
+  const W = Math.max(svg.parentElement.clientWidth - 2, 700), H = 640;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.style.width = W + "px";
+  const maxCnt = Math.max(...flows.map(f=>f.order_cnt));
+  // 城市聚合
+  const depTot = {}, arrTot = {};
+  flows.forEach(f=>{depTot[f.dep]=(depTot[f.dep]||0)+f.order_cnt; arrTot[f.arr]=(arrTot[f.arr]||0)+f.order_cnt;});
+  const deps = Object.keys(depTot).sort((a,b)=>depTot[b]-depTot[a]);
+  const arrs = Object.keys(arrTot).sort((a,b)=>arrTot[b]-arrTot[a]);
+  const leftX = 130, rightX = W-130, gap = 8;
+  const depY = {}, arrY = {};
+  let y = 20;
+  const barH = Math.max(Math.min(28, (H-60)/Math.max(deps.length,1) - gap), 6);
+  deps.forEach(c=>{depY[c]=[y, y+barH]; y += barH+gap;});
+  y = 20;
+  const barHa = Math.max(Math.min(28, (H-60)/Math.max(arrs.length,1) - gap), 6);
+  arrs.forEach(c=>{arrY[c]=[y, y+barHa]; y += barHa+gap;});
+  let html = '';
+  // 左侧出发地（蓝）
+  deps.forEach(c=>{
+    const [y1,y2] = depY[c];
+    html += `<rect x="${leftX-100}" y="${y1}" width="8" height="${y2-y1}" fill="#4E79A7" rx="2"/>
+    <text x="${leftX-108}" y="${(y1+y2)/2+4}" text-anchor="end" font-size="12" fill="#333">${esc(c)}</text>`;
+  });
+  // 右侧到达地（橙）
+  arrs.forEach(c=>{
+    const [y1,y2] = arrY[c];
+    html += `<rect x="${rightX+92}" y="${y1}" width="8" height="${y2-y1}" fill="#F28E2B" rx="2"/>
+    <text x="${rightX+108}" y="${(y1+y2)/2+4}" font-size="12" fill="#333">${esc(c)}</text>`;
+  });
+  // 弧线（粗细=订单量比例）
+  flows.forEach(f=>{
+    const [dy1,dy2] = depY[f.dep], [ay1,ay2] = arrY[f.arr];
+    const dMid = (dy1+dy2)/2, aMid = (ay1+ay2)/2;
+    const w = Math.max(1, (f.order_cnt/maxCnt)*(barH*0.8));
+    const path = `M ${leftX-92} ${dMid} C ${W/2} ${dMid}, ${W/2} ${aMid}, ${rightX+92} ${aMid}`;
+    const refund = f.refund_cnt > 0 && f.refund_cnt/f.order_cnt >= 0.5;
+    html += `<path d="${path}" stroke="${refund?'#E15759':'#86B6D6'}" stroke-width="${w}" fill="none" opacity="0.55">
+    <title>${esc(f.dep)} → ${esc(f.arr)}：${f.order_cnt} 单 / ${f.device_cnt} 台设备 / 退款 ${f.refund_cnt} 单${refund?'（退款≥50%，红）':''}</title></path>`;
+  });
+  // 图例
+  html += `<text x="16" y="${H-18}" font-size="11" fill="#4E79A7">■ 出发地</text>
+  <text x="90" y="${H-18}" font-size="11" fill="#F28E2B">■ 到达地</text>
+  <text x="164" y="${H-18}" font-size="11" fill="#86B6D6">━ 弧线粗细=订单量</text>
+  <text x="300" y="${H-18}" font-size="11" fill="#E15759">━ 退款率≥50%的航线标红</text>`;
+  svg.innerHTML = html;
+}
+document.querySelector('[data-tab="routegang"]').addEventListener("click",()=>{loadRouteGangs();});
+window.addEventListener("resize",()=>{if(rgFlowData)drawRouteFlows();});
 // Auto-load metrics on first tab switch
 </script>
 </body>
