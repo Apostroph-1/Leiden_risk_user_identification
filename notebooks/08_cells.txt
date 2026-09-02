@@ -30,6 +30,7 @@ base = pd.read_csv(resolve_base(), dtype=str)
 det = pd.read_csv(resolve_detail(), dtype=str)
 full = pd.read_csv(os.path.join(OUT, "final_merged_output.csv"), dtype=str,
                    usecols=["device_id", "community_id", "risk_level", "flight_refund_amount",
+                            "flight_refund_order_cnt",
                             "flight_pay_ok_order_amount", "flight_total_order_cnt"])
 comm = pd.read_csv(os.path.join(OUT, "device_community.csv"), dtype=str,
                    usecols=["node", "node_type", "community_id"])
@@ -79,6 +80,16 @@ diff = (det_cnt_by_dev.loc[common] - base_common).abs()
 ratio_ok = (diff / base_common.replace(0, np.nan) <= 0.05).mean()
 check("明细订单量vs宽表(<=5%偏差)", ratio_ok >= 0.8,
       f"抽样 {len(common)} 设备, {ratio_ok*100:.0f}% 在 5% 偏差内")
+
+# 4.5 退款率与金额一致性（社区级矛盾检测）
+full["refund_cnt"] = pd.to_numeric(full["flight_refund_order_cnt"], errors="coerce").fillna(0)
+full["refund_amt"] = pd.to_numeric(full["flight_refund_amount"], errors="coerce").fillna(0)
+comm_check = full[full["community_id"] != -1].groupby("community_id").agg(
+    rc=("refund_cnt", "sum"), ra=("refund_amt", "sum"))
+conflict = comm_check[(comm_check["rc"] > 0) & (comm_check["ra"] == 0)]
+n_conflict = len(conflict)
+check("退款率>0但金额=0矛盾社区(线上支付表关联缺失)", n_conflict == 0,
+      f"矛盾社区 {n_conflict} 个（根因: 支付表仅关联 33.9% 订单, 金额大面积缺失——前端已显示缺失而非 0; 需线上修复 SQL 关联口径）")
 
 # 5. 产出完整性
 for f in ["device_risk_score.csv","final_merged_output.csv","community_risk_tags.csv",

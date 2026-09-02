@@ -887,6 +887,11 @@ class GraphEngine:
         else:
             result["risk_tags"] = "未命中"
             result["tag_cnt"] = 0
+        # ---- 退款金额缺失语义修正 ----
+        # 支付表仅能关联 33.9% 订单（线上限制），社区退款单>0 但金额=0 时
+        # 金额是"缺失"不是"0"——置 None 让前端显示缺失标记，避免误导
+        _mask = (result.get("flight_refund_order_cnt", 0) > 0) & (result.get("flight_refund_amount", 0) == 0)
+        result.loc[_mask, "flight_refund_amount"] = None
         # Sort（新增: tags=标签数排序 / machine=机器设备数排序）
         sort_map = {"comp": "flight_comp_total_amount", "refund": "flight_refund_amount",
                      "order": "flight_total_order_cnt", "device": "device_cnt",
@@ -909,7 +914,8 @@ class GraphEngine:
                 if k == "behavior_labels":
                     rec[k] = v
                 elif pd.isna(v):
-                    rec[k] = 0
+                    # 退款金额缺失语义：退款单>0 但金额缺失（置 None 的）保持 None 传给前端显示"缺失"
+                    rec[k] = None if k == "flight_refund_amount" else 0
                 elif isinstance(v, float):
                     rec[k] = round(float(v), 2)
                 else:

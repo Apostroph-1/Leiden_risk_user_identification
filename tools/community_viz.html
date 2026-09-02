@@ -477,7 +477,7 @@ async function loadMetrics(){
       <td>${c.device_cnt||0}</td>
       <td>${c.flight_total_order_cnt||0}</td>
       <td>${fmtAmt(c.flight_pay_ok_order_amount)}</td>
-      <td style="color:#E15759">${fmtAmt(c.flight_refund_amount)}</td>
+      <td style="color:#E15759">${c.flight_refund_amount==null?'<span style="color:#999;font-size:11px">缺失</span>':fmtAmt(c.flight_refund_amount)}</td>
       <td style="color:#E15759;font-weight:700">${fmtAmt(c.flight_comp_total_amount)}</td>
       <td>${((c.refund_rate||0)*100).toFixed(1)}%</td>
       <td>${((c.comp_amount_rate||0)*100).toFixed(1)}%</td>
@@ -697,7 +697,7 @@ async function loadAnalysis(){
       +'<td>'+(c.device_cnt||0)+'</td>'
       +'<td>'+(c.flight_total_order_cnt||0)+'</td>'
       +'<td>'+fmtAmt(c.flight_pay_ok_order_amount)+'</td>'
-      +'<td style="color:#E15759">'+fmtAmt(c.flight_refund_amount)+'</td>'
+      +'<td style="color:#E15759">'+(c.flight_refund_amount==null?'<span style="color:#999;font-size:11px">缺失</span>':fmtAmt(c.flight_refund_amount))+'</td>'
       +'<td style="color:#E15759;font-weight:700">'+fmtAmt(c.flight_comp_total_amount)+'</td>'
       +'<td>'+((c.refund_rate||0)*100).toFixed(1)+'%</td>'
       +'<td>'+((c.comp_amount_rate||0)*100).toFixed(1)+'%</td>'
@@ -754,7 +754,7 @@ async function renderAnalysisCommSummary(commId){
     +'<td style="padding:4px 14px 4px 0"><b>'+ (c.device_cnt||0) +'</b> 台设备</td>'
     +'<td style="padding:4px 14px"><b>'+(c.flight_total_order_cnt||0)+'</b> 总订单</td>'
     +'<td style="padding:4px 14px">支付 <b>'+fmtAmt(c.flight_pay_ok_order_amount)+'</b></td>'
-    +'<td style="padding:4px 14px;color:#E15759">退款 <b>'+fmtAmt(c.flight_refund_amount)+'</b> ('+((c.refund_rate||0)*100).toFixed(1)+'%)</td>'
+    +'<td style="padding:4px 14px;color:#E15759">退款 <b>'+(c.flight_refund_amount==null?'<span style="font-size:11px;color:#999">金额缺失</span>':fmtAmt(c.flight_refund_amount))+'</b> (退款率'+((c.refund_rate||0)*100).toFixed(1)+'% / 退款单'+(c.flight_refund_order_cnt||0)+')</td>'
     +'<td style="padding:4px 14px;color:#E15759">赔付 <b>'+fmtAmt(c.flight_comp_total_amount)+'</b> ('+((c.comp_amount_rate||0)*100).toFixed(1)+'%)</td>'
     +'<td style="padding:4px 14px;color:#E15759">黄牛 <b>'+(c.flight_scalper_cnt||0)+'</b> 单</td>'
     +'<td style="padding:4px 14px;color:#E15759">拦截 <b>'+(c.flight_intercept_cnt||0)+'</b> 单</td>'
