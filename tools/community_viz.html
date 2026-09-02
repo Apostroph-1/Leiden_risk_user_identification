@@ -283,7 +283,7 @@ svg.graph:active{cursor:grabbing}
 <div style="overflow:auto;max-height:520px">
 <table id="analysisDetailTable" style="font-size:12px">
 <thead><tr>
-<th>device_id</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
+<th>device_id</th><th>特征标签</th><th>总订单</th><th>支付金额</th><th>退款金额</th><th>赔付金额</th><th>黄牛单</th><th>拦截单</th><th>userId数</th><th>手机数</th><th>证件数</th><th>支付索引数</th><th>退款率</th><th>赔付率</th><th>规则明细</th><th>异常投票</th><th>规则命中</th><th>伪标签</th><th>风险等级</th>
 </tr></thead>
 <tbody id="analysisDetailTbody"></tbody>
 </table>
@@ -821,6 +821,11 @@ async function loadAnalysisDetail(){
     const rlColor={"高风险":"#E15759","中风险":"#F28E2B","疑似风险":"#EDC948","普通用户":"#59A14F","未评估":"#BAB0AC"}[r.risk_level]||"#333";
     return '<tr style="cursor:pointer" onclick="loadAnalysisDeviceDrillDown(\''+esc(r.device_id)+'\')" ondblclick="jumpToNodeFromDetail(\''+esc(r.device_id)+'\')">'
       +'<td><b>'+esc(r.device_id)+'</b></td>'
+    const ftTags=(r.feature_tags||[]).map(t=>{
+      const cm={'短时退款':'#E15759','套利嫌疑':'#B07AA1','金额档位聚集':'#76B7B2','自动支付器':'#E15759','机器行为':'#E15759'}[t]||'#76B7B2';
+      return '<span style="display:inline-block;margin:1px;padding:1px 5px;font-size:10px;border-radius:3px;background:'+cm+'22;color:'+cm+';border:1px solid '+cm+'66">'+t+'</span>';
+    }).join("")||'<span style="color:#bbb">-</span>';
+      +'<td style="max-width:200px">'+ftTags+'</td>'
       +'<td>'+(r.flight_total_order_cnt||0)+'</td>'
       +'<td>'+fmtAmt(r.flight_pay_ok_order_amount)+'</td>'
       +'<td style="color:#E15759">'+fmtAmt(r.flight_refund_amount)+'</td>'
@@ -910,7 +915,7 @@ function drawTimeseries(){
   cv.style.width=cssW+"px"; cv.style.height=cssH+"px";
   cv.width=Math.round(cssW*dpr); cv.height=Math.round(cssH*dpr);
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  tsLayout={leftW,topH,cssW,cssH,rowH,devs,dates};
+  tsLayout={leftW,topH,cssW,cssH,rowH,devs,dates,selectedDevice:tsLayout?tsLayout.selectedDevice:null};
   ctx.clearRect(0,0,cssW,cssH);
   const cellW=Math.max((cssW-leftW-16)/Math.max(dates.length,1),2);
   tsLayout.cellW=cellW;
@@ -921,8 +926,16 @@ function drawTimeseries(){
   // 设备行
   devs.forEach((dev,ri)=>{
     const y=topH+ri*rowH;
-    ctx.fillStyle=ipColor(dev.ip);ctx.font="10px monospace";
-    ctx.fillText(((dev.ip||"?")+" | "+dev.device_id).slice(0,26),4,y+rowH-4);
+    if(tsLayout.selectedDevice===dev.device_id){
+      ctx.fillStyle="rgba(225,87,89,0.12)";
+      ctx.fillRect(0,y,cssW,rowH);
+      ctx.strokeStyle="#E15759";ctx.lineWidth=1;
+      ctx.strokeRect(0.5,y+0.5,cssW-1,rowH-1);
+    }
+    ctx.fillStyle=ipColor(dev.ip);ctx.font="9px monospace";
+    ctx.fillText(dev.device_id.slice(0,14),4,y+rowH-4);
+    ctx.fillStyle="#999";
+    ctx.fillText((dev.ip||"?").slice(0,16),4+dev.device_id.slice(0,14).length*5.5+8,y+rowH-4);
     dates.forEach((dt,ci)=>{
       const cell=dev.days[dt];
       const x=leftW+ci*cellW;
@@ -956,6 +969,8 @@ document.getElementById("tsCanvas").addEventListener("click",async e=>{
   const ri=Math.floor((y-tsLayout.topH)/tsLayout.rowH);
   if(ri<0||ri>=tsLayout.devs.length)return;
   const dev=tsLayout.devs[ri];
+  tsLayout.selectedDevice=dev.device_id;
+  drawTimeseries();
   const d=await api(`/api/device_timeseries/${dev.device_id}?page=1&size=50`);
   if(d.error){return;}
   let html=`<div style="font-weight:600;color:#E15759;font-size:14px">设备明细：${dev.device_id}</div>`;

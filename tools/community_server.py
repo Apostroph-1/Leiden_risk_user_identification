@@ -63,6 +63,9 @@ class GraphEngine:
         self.ip_list_df = None
         # 航线图社区表（route_graph_communities.csv）
         self.route_graph_df = None
+        # 设备特征标签表（06/机器行为）
+        self.dev_feat_v2_df = None
+        self.machine_df2 = None
         self._loaded = False
 
     def _load_detail(self):
@@ -517,6 +520,8 @@ class GraphEngine:
             "flight_distinct_user_id", "flight_passenger_mobile_info",
             "flight_pay_tool_detail", "flight_uid_card_info",
         ] if c in page_df.columns]
+        # 设备特征标签（套利/档位/自动支付/机器行为）
+        feat_tags = self._load_dev_feature_tags()
         records = []
         for _, row in page_df[display_cols].iterrows():
             rec = {}
@@ -531,6 +536,11 @@ class GraphEngine:
                     rec[k] = round(float(v), 2)
                 else:
                     rec[k] = int(v) if isinstance(v, (int,)) else v
+            # 特征标签徽章数据
+            tags = list(feat_tags.get(str(row["device_id"]), []))
+            if row.get("is_short_refund_strong", 0) == 1:
+                tags.insert(0, "短时退款")
+            rec["feature_tags"] = tags
             records.append(rec)
         return {"total": total, "page": page, "size": size,
                 "community_id": comm_id, "devices": records}
@@ -567,6 +577,35 @@ class GraphEngine:
             "flight_uid_distinct_card_num_cnt": int(row.get("flight_uid_distinct_card_num_cnt", 0)) if not pd.isna(row.get("flight_uid_distinct_card_num_cnt")) else 0,
         }
 
+
+    def _load_dev_feature_tags(self):
+        """懒加载设备级特征标签（套利/档位/自动支付 + 机器行为），返回 device_id -> 标签列表"""
+        if self.dev_feat_v2_df is not None:
+            return self.dev_feat_v2_df
+        tags = {}
+        # 06 特征表
+        p2 = os.path.join(self.out_dir, "detail_device_features_v2.csv")
+        if os.path.exists(p2):
+            f2 = pd.read_csv(p2)
+            for _, r in f2.iterrows():
+                t = []
+                if r.get("arb_fast_full_cnt", 0) >= 2 or (r.get("arb_full_refund_ratio", 0) >= 0.5 and r.get("arb_has_refund", 0) >= 5):
+                    t.append("套利嫌疑")
+                if r.get("band_strong_order_cnt", 0) >= 3:
+                    t.append("金额档位聚集")
+                if r.get("auto_pay_le3sec_cnt", 0) >= 3:
+                    t.append("自动支付器")
+                if t:
+                    tags[str(r["device_id"])] = t
+        # 机器行为表
+        pm = os.path.join(self.out_dir, "machine_behavior_devices.csv")
+        if os.path.exists(pm):
+            m = pd.read_csv(pm, dtype=str)
+            m["is_machine"] = pd.to_numeric(m["is_machine"], errors="coerce").fillna(0)
+            for _, r in m[m["is_machine"] == 1].iterrows():
+                tags.setdefault(str(r["device_id"]), []).append("机器行为")
+        self.dev_feat_v2_df = tags
+        return tags
 
     def _load_route_graph(self):
         """懒加载航线图社区表"""
