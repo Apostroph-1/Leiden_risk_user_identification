@@ -687,9 +687,10 @@ document.addEventListener("click",function(e){
 async function loadAnalysis(){
   const sort=document.getElementById("analysisSort").value;
   const dir=document.getElementById("analysisDir").value;
-  // 拉大页量做前端过滤（标签筛选在客户端做，避免 server 端复杂化）
-  const fetchSize=analysisTagFilter==="全部"?analysisSize:500;
-  const d=await api("/api/community_analysis?page="+(analysisTagFilter==="全部"?analysisPage:1)+"&size="+fetchSize+"&sort="+sort+"&dir="+dir);
+  // 统一拉大快照（2000 条）在前端过滤+分页：
+  // 修复回归 bug——此前"全部"模式只拉当前页 20 条，数值过滤仅对这 20 条生效，社区列表疑似"只剩 20 个"
+  const fetchSize=2000;
+  const d=await api("/api/community_analysis?page=1&size="+fetchSize+"&sort="+sort+"&dir="+dir);
   if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="20">'+esc(d.error)+'</td></tr>';return;}
   let rows=d.communities||[];
   // 标签过滤（risk_tags 含关键词）
