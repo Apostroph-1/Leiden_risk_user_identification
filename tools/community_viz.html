@@ -690,7 +690,14 @@ async function loadAnalysis(){
   // 统一拉大快照（2000 条）在前端过滤+分页：
   // 修复回归 bug——此前"全部"模式只拉当前页 20 条，数值过滤仅对这 20 条生效，社区列表疑似"只剩 20 个"
   const fetchSize=2000;
-  const d=await api("/api/community_analysis?page=1&size="+fetchSize+"&sort="+sort+"&dir="+dir);
+  // 深翻页分流: 无筛选且页码超出快照范围(>100页)时向 server 取当页并直接渲染
+  const noFilter=analysisTagFilter==="全部"&&!(parseInt(document.getElementById("analysisMinMachine").value)>0)&&!(parseInt(document.getElementById("analysisMinDevice").value)>0);
+  _analysisDeepRows=null;
+  if(noFilter&&analysisPage>100){
+    await loadAnalysisDeepPage();
+    if(_analysisDeepRows){window._analysisRows=_analysisDeepRows;}
+  }
+  const d=_analysisDeepRows?{communities:_analysisDeepRows,total:0}:await api("/api/community_analysis?page=1&size="+fetchSize+"&sort="+sort+"&dir="+dir);
   if(d.error){document.getElementById("analysisTbody").innerHTML='<tr><td colspan="20">'+esc(d.error)+'</td></tr>';return;}
   let rows=d.communities||[];
   // 标签过滤（risk_tags 含关键词）
@@ -702,9 +709,13 @@ async function loadAnalysis(){
   const minD=parseInt(document.getElementById("analysisMinDevice").value)||0;
   rows=rows.filter(c=>(c.machine_devices||0)>=minM && (c.device_cnt||0)>=minD);
   // 统一前端分页：先过滤后切页（标签与数值过滤对所有数据生效）
-  analysisTotal=rows.length;
-  window._analysisRows=rows;
-  rows=rows.slice((analysisPage-1)*analysisSize, analysisPage*analysisSize);
+  if(_analysisDeepRows){
+    rows=_analysisDeepRows;
+  }else{
+    analysisTotal=rows.length;
+    window._analysisRows=rows;
+    rows=rows.slice((analysisPage-1)*analysisSize, analysisPage*analysisSize);
+  }
   const tbody=document.getElementById("analysisTbody");
   tbody.innerHTML=rows.map(c=>{
     const badges=(c.behavior_labels||[]).map(l=>'<span class="tag" style="background:'+l.color+';margin:2px">'+esc(l.label)+'</span>').join(" ");
@@ -747,6 +758,16 @@ async function loadAnalysis(){
 
 function changeAnalysisPage(d){analysisPage=Math.max(1,analysisPage+d);loadAnalysis();}
 function jumpAnalysisPage(){const v=parseInt(document.getElementById("analysisJumpInput").value)||1;const maxP=Math.ceil(analysisTotal/analysisSize);analysisPage=Math.min(Math.max(1,v),maxP);loadAnalysis();}
+// 深翻页: 页码超出本地快照(2000条/100页)时向 server 请求该页——数据注入全局 _analysisDeepRows
+let _analysisDeepRows=null;
+async function loadAnalysisDeepPage(){
+  const sort=document.getElementById("analysisSort").value;
+  const dir=document.getElementById("analysisDir").value;
+  const d=await api("/api/community_analysis?page="+analysisPage+"&size="+analysisSize+"&sort="+sort+"&dir="+dir);
+  if(d.error){return;}
+  _analysisDeepRows=d.communities||[];
+  analysisTotal=d.total||analysisTotal;   // 保持 server 全量 total（22194）
+}
 
 async function viewAnalysisDetail(commId){
   currentAnalysisCommId=commId;
