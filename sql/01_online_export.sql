@@ -58,8 +58,9 @@ WITH pay_refund_detail AS (
     ) pay_method ON pay_refund.orderid = pay_method.orderid
 ),
 comp AS (
-    -- 赔付：total_amount=订单维度总赔付（2026-09-02 用户确认的正确字段），
-    -- compensation_amount=单次赔付金额（保留兼容）。AVG!=MAX 判多条求和、单条取本身
+    -- 赔付：唯一口径 = comp 表 total_amount（订单维度总赔付，pay_success 状态）
+    -- 2026-09-02 用户最终确认：所有赔付金额只用 total_amount，不用 compensation_amount。
+    -- AVG!=MAX 判多条求和、单条取本身
     SELECT
         order_no AS order_no1,
         ROUND(IF(
@@ -67,13 +68,7 @@ comp AS (
               != MAX(CASE WHEN compensation_status = 'pay_success' THEN total_amount END),
             SUM(CASE WHEN compensation_status = 'pay_success' THEN total_amount ELSE 0 END),
             AVG(CASE WHEN compensation_status = 'pay_success' THEN total_amount END)
-        ), 2) AS total_amount,
-        ROUND(IF(
-            AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
-              != MAX(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END),
-            SUM(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount ELSE 0 END),
-            AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
-        ), 2) AS compensation_amount
+        ), 2) AS total_amount
     FROM default.ods_callcenterdb_cc_compensation
     WHERE dt = '%(DATE)s'
       AND create_time >= date_sub(current_date, 90)

@@ -59,7 +59,10 @@ for col in TIME_COLS:
     df[col] = pd.to_datetime(df[col], errors="coerce")
 
 # 数值列
-for col in ["order_amount", "refund_amount", "pay_amount", "compensation_amount"]:
+# 2026-09-02: 赔付口径唯一化为 comp 表 total_amount（新 detail 列名）；
+# 老文件列名 compensation_amount，兼容两者
+_comp_col = "total_amount" if "total_amount" in d.columns else "compensation_amount"
+for col in ["order_amount", "refund_amount", "pay_amount", _comp_col]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 df["pay_ok"] = pd.to_numeric(df["pay_ok"], errors="coerce")
 df["is_ticket_success"] = pd.to_numeric(df["is_ticket_success"], errors="coerce")
@@ -263,7 +266,7 @@ featE["detail_order_amount_max"] = amt_g["order_amount"].max()
 featE["detail_order_amount_std"] = amt_g["order_amount"].std()
 featE["detail_refund_amount_sum"] = amt_g["refund_amount"].sum()
 featE["detail_refund_amount_ratio"] = featE["detail_refund_amount_sum"] / amt_g["order_amount"].sum().replace(0, np.nan)
-featE["detail_comp_amount_sum"] = amt_g["compensation_amount"].sum()
+featE["detail_comp_amount_sum"] = amt_g[_comp_col if _comp_col in amt_g.columns else "compensation_amount"].sum()
 # 状态分布
 featE["detail_cancel_order_cnt"] = amt_g["status"].apply(lambda s: s.isin([12, 90, 91]).sum())
 featE["detail_cancel_order_ratio"] = featE["detail_cancel_order_cnt"] / featA["detail_order_cnt"].replace(0, np.nan)

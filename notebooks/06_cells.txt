@@ -33,7 +33,9 @@ for c in ["create_time", "pay_time", "refund_apply_time", "refund_complete_time"
     d[c] = pd.to_datetime(d[c], errors="coerce", format="mixed")
 d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
 d["refund_amount"] = pd.to_numeric(d["refund_amount"], errors="coerce")
-d["compensation_amount"] = pd.to_numeric(d["compensation_amount"], errors="coerce")
+# 赔付口径唯一：total_amount（新文件）/ compensation_amount（老文件）兼容
+_comp_col = "total_amount" if "total_amount" in d.columns else "compensation_amount"
+d[_comp_col] = pd.to_numeric(d[_comp_col], errors="coerce")
 d = d[d["create_time"].notna()].sort_values(["device_id", "create_time"]).reset_index(drop=True)
 print(f"  {len(d)} 行, {d['device_id'].nunique()} 设备, 耗时 {time.time()-t0:.1f}s")
 ##MD##
@@ -62,7 +64,7 @@ for dev, g in d.groupby("device_id"):
     n_refund = int(g["_has_refund"].sum())
     n_full = int(g["_full_refund"].sum())
     n_arb = int(g["_arb_order"].sum())
-    comp_sum = g["compensation_amount"].sum() if "compensation_amount" in g else 0
+    comp_sum = g[_comp_col].sum() if _comp_col in g else 0
     rows[dev] = {
         "detail_total_orders": n,
         # 套利族

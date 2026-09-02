@@ -136,7 +136,7 @@ SELECT
     B.total_price           AS order_amount,
     PR.refund_amount,
     PR.pay_amount,
-    C.total_amount AS compensation_amount,
+    C.total_amount,
     -- 约束对象（SynchroTrap Constraint Object）
     B.ip,
     B.ip_city,
