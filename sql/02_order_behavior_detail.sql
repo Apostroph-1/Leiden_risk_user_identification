@@ -81,7 +81,6 @@ ticket_dim AS (
     --   dep_dates    起飞日期数组（s_dep_date）——行程节奏
     --   dep_times    起飞时刻数组（s_dep_time）——时刻偏好（如总订早班机）
     --   cabins       舱位数组（s_cabin）——舱位偏好指纹
-    --   ticket_status 票状态（p_ticket_status MAX）——出行/退票结局（骗赔方向）
     --   passenger_genders / passenger_birthdays 乘机人结构指纹（证件池特征）
     SELECT
         IF(o_dom_inter = 1, o_main_order_no, o_order_no) AS order_no,
@@ -94,7 +93,6 @@ ticket_dim AS (
         MAX(o_ip_country)  AS ip_country,
         MAX(o_ip_province) AS ip_province,
         MAX(o_ip_city)     AS ip_city_t,
-        MAX(p_ticket_status) AS ticket_status,
         array_remove(array_distinct(array_agg(p_gender)), NULL)    AS passenger_genders,
         array_remove(array_distinct(array_agg(p_birthday)), NULL)  AS passenger_birthdays
     FROM flight.dwd_ord_wide_order_ticket_di
@@ -108,11 +106,12 @@ comp AS (
     SELECT
         order_no AS order_no1,
         ROUND(IF(
-            AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
-              != MAX(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END),
-            SUM(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount ELSE 0 END),
-            AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
-        ), 2) AS compensation_amount
+            -- 仅统计pay_success订单：多条成功（AVG!=MAX）求和；单条取均值（=本身）
+            AVG(CASE WHEN compensation_status = 'pay_success' THEN total_amount END)
+              != MAX(CASE WHEN compensation_status = 'pay_success' THEN total_amount END),
+            SUM(CASE WHEN compensation_status = 'pay_success' THEN total_amount ELSE 0 END),
+            AVG(CASE WHEN compensation_status = 'pay_success' THEN total_amount END)
+        ), 2) AS total_amount
     FROM default.ods_callcenterdb_cc_compensation
     WHERE dt = '%(DATE)s'
       AND order_no IN (SELECT order_no FROM base_order)
@@ -137,7 +136,7 @@ SELECT
     B.total_price           AS order_amount,
     PR.refund_amount,
     PR.pay_amount,
-    C.compensation_amount,
+    C.total_amount AS compensation_amount,
     -- 约束对象（SynchroTrap Constraint Object）
     B.ip,
     B.ip_city,
@@ -154,7 +153,6 @@ SELECT
     T.dep_dates,
     T.dep_times,
     T.cabins,
-    T.ticket_status,
     T.passenger_genders,
     T.passenger_birthdays
 FROM base_order B

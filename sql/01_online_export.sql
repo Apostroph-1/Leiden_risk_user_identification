@@ -58,9 +58,16 @@ WITH pay_refund_detail AS (
     ) pay_method ON pay_refund.orderid = pay_method.orderid
 ),
 comp AS (
-    -- 赔付：只保留下游实际使用的金额字段（口径不变：AVG=MAX 判单条）
+    -- 赔付：total_amount=订单维度总赔付（2026-09-02 用户确认的正确字段），
+    -- compensation_amount=单次赔付金额（保留兼容）。AVG!=MAX 判多条求和、单条取本身
     SELECT
         order_no AS order_no1,
+        ROUND(IF(
+            AVG(CASE WHEN compensation_status = 'pay_success' THEN total_amount END)
+              != MAX(CASE WHEN compensation_status = 'pay_success' THEN total_amount END),
+            SUM(CASE WHEN compensation_status = 'pay_success' THEN total_amount ELSE 0 END),
+            AVG(CASE WHEN compensation_status = 'pay_success' THEN total_amount END)
+        ), 2) AS total_amount,
         ROUND(IF(
             AVG(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END)
               != MAX(CASE WHEN compensation_status = 'pay_success' THEN compensation_amount END),
