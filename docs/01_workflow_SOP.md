@@ -234,3 +234,42 @@ A: 伪标签由强规则生成，监督模型学到了规则本身，AP=1.0 是�
 
 ### Q: 如何增加新的业务线指标？
 A: 在 02 notebook 的 FEATURE_COLS 中添加新字段，确保原始 CSV 包含对应列。参见 docs/12_cross_bizline_metrics_design.md。
+
+
+---
+
+## v4.2 更新（2026-09-03）
+
+### 全量执行顺序（最新）
+```
+【本周期】
+02 分层 -> 01 Leiden -> 03 合并 -> 06 套利特征 -> 07 航线图 -> 10 指纹团伙 -> 11 舱位套利 -> 08 质检 -> 重启 server
+
+【上周期（演化检测）】
+12_prev_stratify.py（读 26.05.29_base.csv）-> 产出 26.05.29_device_risk_score.csv + 26.05.29_midhigh_devices.csv
+   -> 上传 temp 表线上跑 02 SQL（START=180/END=90）-> 下载 detail
+   -> 09 跃迁检测（P/C 团伙对齐+四形态）-> 重启 server
+
+【真逃离检测】
+需以上周期当时中高危名单导出的 detail（26.05.29 版），09 自动识别消失团伙
+```
+
+### 产出文件命名规范（2026-09-03 起）
+- 周期性产出必须带日期前缀：XX.XX.XX_文件名.csv（如 26.05.29_device_risk_score.csv）
+- 中高危名单（上传线上 temp 表用）：XX.XX.XX_midhigh_devices.csv
+
+### 文档体系（2026-09-03 重构后）
+- 00_指标口径与算法字典.md —— 唯一权威口径源
+- 01_workflow_SOP.md —— 全量操作 SOP（本文档）
+- 02_module_workflow_guide.md —— 模块改动手册
+- 03_community_behavior_analysis.md —— 高危社区行为特征归纳
+- 04_docker_deployment.md —— Docker 部署
+- 05_agent_handoff_SOP.md —— Agent 交接
+- 06_agent_operating_protocol.md —— Agent 操作协议
+- archive/ —— 历史设计稿（旧 01-13 编号，口径已过时仅供参考，git 可追溯）
+
+### 硬规则（每次执行必做）
+1. 新增/修改任何指标、字段、算法 -> 同步更新 00 字典
+2. 提交 git 前 -> README 版本表更新
+3. 跑完管线 -> 08 质检，FAIL 项确认后再发布
+4. 前端改动 -> 验证关键 JS 函数存活

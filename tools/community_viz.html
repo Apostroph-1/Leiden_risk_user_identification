@@ -179,8 +179,19 @@ svg.graph:active{cursor:grabbing}
 </div>
 <div id="transDetail" style="margin-top:14px;display:none">
 <h4 style="font-size:14px;color:#4E79A7;margin-bottom:6px" id="transDetailTitle"></h4>
-<div style="overflow:auto;max-height:380px;border:1px solid #eee;border-radius:8px;background:#fff">
-<table class="data-table" style="font-size:12px"><thead><tr><th>device_id</th><th>风险等级</th><th>订单数</th><th>赔付金额</th></tr></thead><tbody id="transDevTbody"></tbody></table>
+<div style="display:flex;gap:14px;flex-wrap:wrap">
+<div style="flex:1;min-width:420px">
+<h5 style="font-size:13px;color:#F28E2B;margin:4px 0" id="transPrevTitle">上周期团伙设备</h5>
+<div style="overflow:auto;max-height:360px;border:1px solid #f5e0c8;border-radius:8px;background:#fffdf8">
+<table class="data-table" style="font-size:12px"><thead><tr><th>device_id</th><th>风险等级</th><th>订单</th><th>退款单</th><th>赔付</th><th>本周期仍在?</th></tr></thead><tbody id="transPrevTbody"></tbody></table>
+</div>
+</div>
+<div style="flex:1;min-width:420px">
+<h5 style="font-size:13px;color:#4E79A7;margin:4px 0" id="transCurTitle">本周期团伙设备</h5>
+<div style="overflow:auto;max-height:360px;border:1px solid #dbe4f0;border-radius:8px;background:#f8fbff">
+<table class="data-table" style="font-size:12px"><thead><tr><th>device_id</th><th>风险等级</th><th>订单</th><th>退款单</th><th>赔付</th><th>来自上周期?</th></tr></thead><tbody id="transDevTbody"></tbody></table>
+</div>
+</div>
 </div>
 </div>
 </div>
@@ -1164,12 +1175,21 @@ async function loadTransitionDetail(prevG,curG){
   if(d.error){return;}
   document.getElementById("transDetail").style.display="block";
   document.getElementById("transDetailTitle").innerHTML='跃迁对 '+esc(prevG)+' → '+esc(curG)
-    +'（实体重叠 '+d.entity_jaccard.toFixed(3)+' / 指纹 '+d.fp_similarity.toFixed(3)+' / 设备存活 '+(d.dev_survive_ratio*100).toFixed(0)+'% / '+esc(d.transition)+'）本周期设备:';
+    +'（实体重叠 '+d.entity_jaccard.toFixed(3)+' / 指纹 '+d.fp_similarity.toFixed(3)+' / 设备存活 '+(d.dev_survive_ratio*100).toFixed(0)+'% / <b>'+esc(d.transition)+'</b>）';
+  document.getElementById("transPrevTitle").textContent='上周期团伙 '+prevG+' 设备（'+(d.prev_devices||[]).length+' 台）';
+  document.getElementById("transCurTitle").textContent='本周期团伙 '+curG+' 设备（'+(d.cur_devices||[]).length+' 台）';
+  document.getElementById("transPrevTbody").innerHTML=(d.prev_devices||[]).map(v=>
+    '<tr><td style="font-family:monospace">'+esc(v.device_id)+'</td>'
+    +'<td style="color:'+(v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999')+'">'+esc(v.risk_level)+'</td>'
+    +'<td>'+v.order_cnt+'</td><td>'+v.refund_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td>'
+    +'<td>'+(v.still_in_cur?'<span style="color:#59A14F">存活</span>':'<span style="color:#E15759;font-weight:700">已消失</span>')+'</td></tr>'
+  ).join("") || '<tr><td colspan="6" style="color:#999">无成员数据</td></tr>';
   document.getElementById("transDevTbody").innerHTML=(d.cur_devices||[]).map(v=>
     '<tr><td style="font-family:monospace">'+esc(v.device_id)+'</td>'
     +'<td style="color:'+(v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999')+'">'+esc(v.risk_level)+'</td>'
-    +'<td>'+v.order_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td></tr>'
-  ).join("");
+    +'<td>'+v.order_cnt+'</td><td>'+v.refund_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td>'
+    +'<td>'+(v.in_prev_gang?'<span style="color:#F28E2B">老成员</span>':'<span style="color:#4E79A7">新成员</span>')+'</td></tr>'
+  ).join("") || '<tr><td colspan="6" style="color:#999">无数据</td></tr>';
   document.getElementById("transDetail").scrollIntoView({behavior:"smooth",block:"start"});
 }
 document.querySelector('[data-tab="transition"]').addEventListener("click",()=>{loadTransitions();});

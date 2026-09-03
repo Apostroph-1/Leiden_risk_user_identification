@@ -193,6 +193,9 @@ for pid, pdevs in prev_gangs.items():
             "entity_jaccard": round(ent_j, 3),
             "fp_similarity": round(fp_sim, 3),
         })
+# P 团伙成员表（server 跃迁对比下钻依赖）
+pm_rows = [{"prev_gang": pid, "devices": "|".join(sorted(devs))} for pid, devs in prev_gangs.items()]
+pd.DataFrame(pm_rows).to_csv(os.path.join(OUT, "prev_gang_members.csv"), index=False, encoding="utf-8-sig")
 trans = pd.DataFrame(rows)
 print(f"  候选跃迁对: {len(trans)}, 耗时 {time.time()-t0:.1f}s")
 trans.head(10)

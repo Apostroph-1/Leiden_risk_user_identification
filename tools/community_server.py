@@ -616,27 +616,61 @@ class GraphEngine:
         return {"total": len(items), "items": items}
 
     def get_gang_transition_detail(self, prev_gang, cur_gang):
-        """跃迁对明细：本周期团伙设备下钻"""
-        t, _ = self._load_gang_transition()
+        """跃迁对明细：P/C 两团伙设备对比（各自可再下钻）"""
+        t, e = self._load_gang_transition()
         row = t[(t["prev_gang"] == prev_gang) & (t["cur_gang"] == cur_gang)]
         if row.empty:
             return {"error": "transition not found"}
         r = row.iloc[0]
         cid = int(str(cur_gang).replace("C", ""))
         devs = self.merged_df[self.merged_df["community_id"] == cid]
-        dev_rows = []
+        cur_rows = []
         for _, d in devs.iterrows():
-            dev_rows.append({
+            cur_rows.append({
                 "device_id": d["device_id"], "risk_level": d.get("risk_level", "-"),
                 "order_cnt": int(d.get("flight_total_order_cnt", 0) or 0),
+                "refund_cnt": int(d.get("flight_refund_order_cnt", 0) or 0),
                 "comp_amount": float(d.get("flight_comp_total_amount", 0) or 0),
+                "in_prev_gang": 0,
             })
+        # P 团伙成员（09 产出 prev_gang_members.csv）
+        prev_dev_ids = set()
+        pmembers = os.path.join(self.out_dir, "prev_gang_members.csv")
+        if os.path.exists(pmembers):
+            pg = pd.read_csv(pmembers, dtype=str)
+            sub = pg[pg["prev_gang"] == prev_gang]
+            for _, rr in sub.iterrows():
+                if pd.notna(rr.get("devices")):
+                    prev_dev_ids |= {x for x in str(rr["devices"]).split("|") if x}
+        cur_ids = {x["device_id"] for x in cur_rows}
+        for x in cur_rows:
+            x["in_prev_gang"] = 1 if x["device_id"] in prev_dev_ids else 0
+        # P 团伙设备指标（从上周期分层表查）
+        prev_rows = []
+        if prev_dev_ids:
+            prs = os.path.join(self.out_dir, "26.05.29_device_risk_score.csv")
+            pr_map = {}
+            if os.path.exists(prs):
+                pr = pd.read_csv(prs, dtype=str)
+                pr = pr[pr["device_id"].isin(prev_dev_ids)]
+                pr_map = {r_["device_id"]: r_ for _, r_ in pr.iterrows()}
+            for dev in sorted(prev_dev_ids):
+                m = pr_map.get(dev)
+                prev_rows.append({
+                    "device_id": dev,
+                    "risk_level": m.get("risk_level", "-") if m is not None else "-",
+                    "order_cnt": int(float(m.get("flight_total_order_cnt", 0))) if m is not None else 0,
+                    "refund_cnt": int(float(m.get("flight_refund_order_cnt", 0))) if m is not None else 0,
+                    "comp_amount": float(m.get("flight_comp_total_amount", 0)) if m is not None else 0,
+                    "still_in_cur": 1 if dev in cur_ids else 0,
+                })
         return {"prev_gang": prev_gang, "cur_gang": cur_gang,
                 "entity_jaccard": float(r["entity_jaccard"]),
                 "fp_similarity": float(r["fp_similarity"]),
                 "dev_survive_ratio": float(r["dev_survive_ratio"]),
                 "transition": r["transition"],
-                "cur_devices": dev_rows}
+                "prev_devices": prev_rows,
+                "cur_devices": cur_rows}
 
     def _load_dev_feature_tags(self):
         """懒加载设备级特征标签（套利/档位/自动支付 + 机器行为），返回 device_id -> 标签列表"""

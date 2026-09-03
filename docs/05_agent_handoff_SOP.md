@@ -304,3 +304,17 @@ Windows: 关闭 HVCI 内存完整性（Windows 安全中心 -> 设备安全性 -
 | /api/community_graph/<id> | GET | 指定社区图 |
 | /api/community_timeseries/<id>?max=150 | GET | 社区时序相似性数据（SynchroTrap 可视化） |
 | /api/device_timeseries/<device_id>?page=1&size=50 | GET | 设备订单流水下钻（时序图点击） |
+
+
+## v4.2 新增 API（2026-09-03）
+| API | 说明 |
+|-----|------|
+| /api/gang_transitions?kind=all/形态名/escape | 团伙跃迁列表（四形态筛选） |
+| /api/gang_transition_detail/<P团伙>/<C团伙> | 跃迁对 P/C 双团伙设备对比明细 |
+| /api/route_gangs / /api/route_gang_flows/<id> | 航线团伙列表/流向图数据 |
+
+## 前端页签（v4.2 全量）
+高危分析（默认）| 社区图谱 | 路径查询 | 多条路径 | 节点查询 | 时序分析 | 航线团伙 | 团伙跃迁 | 内部IP
+
+## 文档引用更新
+旧编号 11-18 -> 新编号 01-06（见 01_workflow_SOP.md 文档体系节）
