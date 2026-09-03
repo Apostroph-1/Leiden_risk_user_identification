@@ -206,12 +206,19 @@ svg.graph:active{cursor:grabbing}
 <th>航线团伙</th><th>设备数</th><th>实体社区</th><th>套利率</th>
 </tr></thead><tbody id="rgGangTbody"></tbody></table>
 </div>
-<h4 style="margin:12px 0 4px">航线明细</h4>
+<h4 style="margin:12px 0 4px">航线明细（点击行展开该航线的设备构成）</h4>
 <div style="overflow:auto;max-height:320px;border:1px solid #eee;border-radius:8px;background:#fff">
 <table class="data-table" style="font-size:12px"><thead><tr>
 <th>出发</th><th>到达</th><th>订单数</th><th>设备数</th><th>退款单</th><th>金额</th>
 </tr></thead><tbody id="rgFlowTbody"></tbody></table>
 </div>
+<h4 style="margin:12px 0 4px">团伙设备表（含实体社区归属，点击设备下钻订单明细）</h4>
+<div style="overflow:auto;max-height:320px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr>
+<th>device_id</th><th>实体社区</th><th>风险等级</th><th>订单数</th><th>IP数</th><th>退款单</th><th>金额</th>
+</tr></thead><tbody id="rgDevTbody"></tbody></table>
+</div>
+<div id="rgDeviceDrill" style="margin-top:12px;display:none"></div>
 </div>
 <div style="flex:1;min-width:600px">
 <h4 style="margin:8px 0 4px">团伙航线流向图（左=出发地 蓝 / 右=到达地 橙 / 弧线粗细=订单量）</h4>
@@ -1086,12 +1093,44 @@ async function loadGangFlows(rcid){
   const d = await api('/api/route_gang_flows/'+rcid);
   if(d.error){document.getElementById("rgFlowTbody").innerHTML='<tr><td colspan="6">'+esc(d.error)+'</td></tr>';return;}
   rgFlowData = d;
-  document.getElementById("rgFlowTbody").innerHTML = (d.flows||[]).map(f=>
-    `<tr><td><b style="color:#4E79A7">${esc(f.dep)}</b></td><td><b style="color:#F28E2B">${esc(f.arr)}</b></td>
+  // 溯源头：社区归属分布（航线团伙 -> 实体社区映射）
+  const dist=(d.community_dist||[]).map(c=>
+    `<span style="display:inline-block;margin:2px;padding:2px 8px;border-radius:4px;border:1px solid #4E79A766;background:#4E79A711;cursor:pointer" onclick="rgJumpCommunity(${c.community_id})" title="点击跳转高危分析该社区">社区 ${c.community_id}：${c.device_cnt}台</span>`
+  ).join("") || '<span style="color:#999">无实体社区归属</span>';
+  document.getElementById("rgSummary").innerHTML = `<b>双图融合高置信团伙：</b>当前查看 <b style="color:#E15759">航线团伙 ${d.route_community_id}</b>（${d.device_cnt}台设备）
+    —— 对应实体社区：${dist}（主要社区 ${d.top_entity_community}，对齐率 ${(d.top_entity_ratio*100).toFixed(0)}%，套利率 ${(d.arb_device_ratio*100).toFixed(0)}%）`;
+  // 航线明细行（点击展开设备构成）
+  document.getElementById("rgFlowTbody").innerHTML = (d.flows||[]).map((f,i)=>
+    `<tr style="cursor:pointer" onclick="rgToggleFlowDevs(${i})" title="点击展开该航线的设备构成">
+     <td><b style="color:#4E79A7">${esc(f.dep)}</b></td><td><b style="color:#F28E2B">${esc(f.arr)}</b></td>
      <td>${f.order_cnt}</td><td>${f.device_cnt}</td>
-     <td style="color:#E15759">${f.refund_cnt}</td><td>${f.amount}</td></tr>`
+     <td style="color:#E15759">${f.refund_cnt}</td><td>${f.amount}</td></tr>
+     <tr id="rgFlowDevRow${i}" style="display:none"><td colspan="6" style="background:#fafbfd;padding:6px 10px">
+       ${(f.devices||[]).map(v=>'<span style="display:inline-block;margin:2px;padding:2px 7px;border-radius:4px;font-size:11px;font-family:monospace;border:1px solid #ddd;cursor:pointer" onclick="loadTransDeviceDrill(\''+esc(v.device_id)+'\',\'cur\')" title="点击下钻订单明细">'+esc(v.device_id.slice(0,16))+' <span style="color:#4E79A7">C'+v.community_id+'</span> '+v.order_cnt+'单'+(v.risk_level==='高风险'?' <span style="color:#E15759">高</span>':'')+'</span>').join("")}
+     </td></tr>`
   ).join("") || '<tr><td colspan="6" style="color:#999">无数据</td></tr>';
+  // 团伙设备表
+  document.getElementById("rgDevTbody").innerHTML = (d.devices||[]).map(v=>
+    `<tr style="cursor:pointer" onclick="loadTransDeviceDrill(\''+esc(v.device_id)+'\',\'cur\')" title="点击下钻该设备订单明细">
+     <td style="font-family:monospace">${esc(v.device_id)}</td>
+     <td><b style="color:#4E79A7;cursor:pointer" onclick="event.stopPropagation();rgJumpCommunity(${v.community_id})">${v.community_id}</b></td>
+     <td style="color:${v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999'}">${esc(v.risk_level)}</td>
+     <td>${v.order_cnt}</td><td>${v.ip_cnt}</td>
+     <td style="color:#E15759">${v.refund_cnt}</td><td>${v.amount}</td></tr>`
+  ).join("") || '<tr><td colspan="7" style="color:#999">无数据</td></tr>';
   drawRouteFlows();
+}
+function rgToggleFlowDevs(i){
+  const r=document.getElementById("rgFlowDevRow"+i);
+  if(r) r.style.display = r.style.display==="none" ? "table-row" : "none";
+}
+function rgJumpCommunity(cid){
+  // 跳高危分析页签并打开该社区汇总+明细
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+  document.querySelectorAll(".panel").forEach(p=>p.classList.remove("active"));
+  document.querySelector('[data-tab="analysis"]').classList.add("active");
+  document.getElementById("panel-analysis").classList.add("active");
+  viewAnalysisDetail(cid);
 }
 // 桑基式流向图：左列出发地（蓝），右列到达地（橙），贝塞尔弧线连接，粗细=订单量
 function drawRouteFlows(){

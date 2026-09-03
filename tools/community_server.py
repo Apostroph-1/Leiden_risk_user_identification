@@ -837,7 +837,8 @@ class GraphEngine:
         return {"total": len(gangs), "gangs": gangs}
 
     def get_route_gang_flows(self, route_community_id):
-        """指定航线团伙的航线流向数据（dep→arr 聚合，前端流向图用）"""
+        """指定航线团伙的航线流向数据（dep→arr 聚合，前端流向图用）
+        v4.5: 每条航线带设备清单（社区归属/风险等级）+ 团伙设备全表，支持溯源到社区和设备下钻"""
         rg = self._load_route_graph()
         if rg is None:
             return {"error": "route_graph_communities.csv not found"}
@@ -848,26 +849,71 @@ class GraphEngine:
         d = self._load_detail()
         if d is None:
             return {"error": "detail not found"}
+        # 设备 -> 实体社区/风险等级映射
+        merged = self.merged_df[["device_id", "community_id", "risk_level"]]
+        dev_comm = dict(zip(merged["device_id"], merged["community_id"]))
+        dev_risk = dict(zip(merged["device_id"], merged["risk_level"]))
         dd = d[d["device_id"].isin(devs)]
         if dd.empty:
             return {"error": "no detail data for this gang"}
+        # 每条航线（dep,arr）的设备构成
+        dd2 = dd.copy()
+        dd2["_comm"] = dd2["device_id"].map(dev_comm)
+        dd2["_risk"] = dd2["device_id"].map(dev_risk)
+        flow_devs = dd2.groupby(["dep_city", "arr_city", "device_id"]).agg(
+            order_cnt=("order_no", "count")).reset_index()
         flows = dd.groupby(["dep_city", "arr_city"]).agg(
             order_cnt=("order_no", "count"),
             device_cnt=("device_id", "nunique"),
             amount=("order_amount", "sum"),
             refund_cnt=("refund_apply_time", lambda s: s.notna().sum()),
         ).reset_index().sort_values("order_cnt", ascending=False)
+        # (dep,arr) -> 设备清单
+        fd_map = {}
+        for _, r in flow_devs.iterrows():
+            key = (r["dep_city"], r["arr_city"])
+            fd_map.setdefault(key, []).append({
+                "device_id": r["device_id"],
+                "order_cnt": int(r["order_cnt"]),
+                "community_id": int(dev_comm.get(r["device_id"], -1)) if dev_comm.get(r["device_id"]) is not None else -1,
+                "risk_level": dev_risk.get(r["device_id"], "-"),
+            })
         flow_list = []
         for _, f in flows.iterrows():
+            key = (f["dep_city"], f["arr_city"])
             flow_list.append({
                 "dep": f["dep_city"], "arr": f["arr_city"],
                 "order_cnt": int(f["order_cnt"]), "device_cnt": int(f["device_cnt"]),
                 "amount": round(float(f["amount"]), 2) if pd.notna(f["amount"]) else 0,
                 "refund_cnt": int(f["refund_cnt"]),
+                "devices": sorted(fd_map.get(key, []), key=lambda x: -x["order_cnt"]),
             })
+        # 团伙设备全表（含社区归属分布）
+        dev_rows = []
+        for dev in sorted(devs):
+            if dev in dd["device_id"].values:
+                g = dd[dd["device_id"] == dev]
+                dev_rows.append({
+                    "device_id": dev,
+                    "order_cnt": int(len(g)),
+                    "community_id": int(dev_comm.get(dev, -1)) if dev_comm.get(dev) is not None else -1,
+                    "risk_level": dev_risk.get(dev, "-"),
+                    "ip_cnt": int(g["ip"].nunique()) if "ip" in g else 0,
+                    "amount": round(float(g["order_amount"].sum()), 2),
+                    "refund_cnt": int(g["refund_apply_time"].notna().sum()),
+                })
+        # 社区归属分布（一个航线团伙可能横跨多个实体社区）
+        from collections import Counter as _C
+        comm_dist = _C(x["community_id"] for x in dev_rows)
         return {"route_community_id": int(route_community_id),
                 "device_cnt": int(row.iloc[0]["device_cnt"]),
-                "flows": flow_list}
+                "top_entity_community": int(row.iloc[0]["top_entity_community"]),
+                "top_entity_ratio": float(row.iloc[0]["top_entity_ratio"]),
+                "arb_device_ratio": float(row.iloc[0]["arb_device_ratio"]),
+                "community_dist": [{"community_id": c, "device_cnt": n}
+                                    for c, n in comm_dist.most_common()],
+                "flows": flow_list,
+                "devices": sorted(dev_rows, key=lambda x: -x["order_cnt"])}
 
     def _load_ip_list(self):
         """懒加载内网 IP 名单（data/IP地址.xlsx）。
