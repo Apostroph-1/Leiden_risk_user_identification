@@ -1,0 +1,83 @@
+##MD##
+# 11 舱位/航班级套利模式分析（②精确团伙作业指纹）
+
+**目标**: 用 ticket_dim 新字段（flight_nums/cabins/dep_dates）做一层比"金额档位"更细的套利识别：
+**同航班同舱位批量下单 + 批量退款** = 机器化套利作业的精确信号（黄牛刷票/占座套现模式）。
+
+**识别逻辑**:
+- 订单级：同 (flight_num, cabin) 组合被 >=N 台设备下单（跨设备同航班同舱位聚集）
+- 批量退款标记：该组合的退款率 >=50%
+- 设备级：命中组合数 >=2 的设备 = 舱位套利嫌疑
+
+**输出**: flight_cabin_arbitrage.csv（设备级标签，进前端特征徽章）
+##CODE##
+import os, ast, time
+from collections import defaultdict
+import pandas as pd
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+
+print("[1/4] 加载明细")
+t0 = time.time()
+d = pd.read_csv(os.path.join(DATA, "26.08.27_detail.csv"), dtype=str, encoding="utf-8")
+d["create_time"] = pd.to_datetime(d["create_time"], errors="coerce", format="mixed")
+d = d[d["create_time"].notna()]
+for c in ["flight_nums", "cabins"]:
+    d[c] = d[c].apply(lambda s: ast.literal_eval(s) if isinstance(s, str) and s.startswith("[") else [])
+d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
+print(f"  {len(d)} 单 / {d['device_id'].nunique()} 设备, 有航班号: {sum(len(x)>0 for x in d['flight_nums'])} 单, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 2. 展开 (航班, 舱位) 组合
+##CODE##
+print("[2/4] 展开航班×舱位组合")
+t0 = time.time()
+rows = []
+for _, r in d.iterrows():
+    flights = r["flight_nums"] or [None]
+    cabins = r["cabins"] or [None]
+    for f in flights:
+        for c in cabins:
+            rows.append({"device_id": r["device_id"], "order_no": r["order_no"],
+                         "flight": f, "cabin": c,
+                         "has_refund": pd.notna(r["refund_apply_time"]),
+                         "amount": r["order_amount"]})
+fx = pd.DataFrame(rows)
+fx = fx[fx["flight"].notna()]
+print(f"  组合展开: {len(fx)} 行, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 3. 聚集组合识别（跨设备同航班同舱位 + 批量退款）
+##CODE##
+print("[3/4] 聚集组合识别")
+t0 = time.time()
+# [TUNABLE] 聚集门槛：同(航班,舱位) >=3 台设备
+g = fx.groupby(["flight", "cabin"]).agg(
+    devices=("device_id", "nunique"),
+    orders=("order_no", "nunique"),
+    refund_orders=("has_refund", "sum"),
+).reset_index()
+g["refund_rate"] = g["refund_orders"] / g["orders"]
+cluster = g[(g["devices"] >= 3) & (g["refund_rate"] >= 0.5)].sort_values("devices", ascending=False)
+print(f"  总组合: {len(g)}, 跨设备聚集(>=3台): {(g['devices']>=3).sum()}, 其中退款率>=50%: {len(cluster)} 个")
+print(f"  耗时 {time.time()-t0:.1f}s")
+if len(cluster):
+    print("\n  Top 聚集组合（同航班同舱位批量退款）:")
+    for _, r in cluster.head(8).iterrows():
+        print(f"    航班 {r['flight']} 舱位 {r['cabin']}: {r['devices']}台/{r['orders']}单, 退款率 {r['refund_rate']*100:.0f}%")
+##MD##
+## 4. 设备级标签输出
+##CODE##
+print("[4/4] 设备级标签输出")
+t0 = time.time()
+cluster_keys = set(zip(cluster["flight"], cluster["cabin"]))
+dev_hit = defaultdict(int)
+for _, r in fx.iterrows():
+    if (r["flight"], r["cabin"]) in cluster_keys:
+        dev_hit[r["device_id"]] += 1
+# [TUNABLE] 设备标签门槛：命中 >=2 个聚集组合
+tagged = {dev: cnt for dev, cnt in dev_hit.items() if cnt >= 2}
+out = pd.DataFrame([{"device_id": dev, "fca_cluster_hits": cnt} for dev, cnt in sorted(tagged.items(), key=lambda x: -x[1])])
+out.to_csv(os.path.join(OUT, "flight_cabin_arbitrage.csv"), index=False, encoding="utf-8-sig")
+print(f"  舱位套利嫌疑设备（>=2 组合）: {len(out)} 台")
+print(f"  输出: flight_cabin_arbitrage.csv, 耗时 {time.time()-t0:.1f}s")

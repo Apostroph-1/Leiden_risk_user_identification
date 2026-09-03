@@ -664,6 +664,23 @@ class GraphEngine:
             m["is_machine"] = pd.to_numeric(m["is_machine"], errors="coerce").fillna(0)
             for _, r in m[m["is_machine"] == 1].iterrows():
                 tags.setdefault(str(r["device_id"]), []).append("机器行为")
+        # 指纹团伙成员（10：跨社区指纹团伙）
+        try:
+            fg = pd.read_csv(os.path.join(self.out_dir, "fingerprint_gangs.csv"), dtype=str)
+            fg = fg[fg.get("is_cross_community") == "1"]
+            for _, r in fg.iterrows():
+                for dev in str(r["devices"]).split("|"):
+                    if dev:
+                        tags.setdefault(dev, []).append("跨社区指纹")
+        except Exception:
+            pass
+        # 舱位套利（11）
+        try:
+            fca = pd.read_csv(os.path.join(self.out_dir, "flight_cabin_arbitrage.csv"), dtype=str)
+            for _, r in fca.iterrows():
+                tags.setdefault(str(r["device_id"]), []).append("舱位套利")
+        except Exception:
+            pass
         self.dev_feat_v2_df = tags
         return tags
 

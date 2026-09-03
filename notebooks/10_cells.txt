@@ -1,0 +1,167 @@
+##MD##
+# 10 指纹团伙发现（①当期跨社区换马甲识别）
+
+**目标**: 不依赖实体关联，纯靠行为指纹找团伙——
+全量 21,399 台设备的（航线 N-Gram + 金额档 + 航班号）指纹，
+MinHash + LSH 加速近似聚类，输出"指纹团伙"；
+重点标记**跨实体社区的指纹团伙**（不同社区但习惯一致 = 换马甲嫌疑）。
+
+**输出**: fingerprint_gangs.csv（指纹团伙列表+跨社区标记）
+##CODE##
+import os, time, ast
+from collections import defaultdict
+import numpy as np
+import pandas as pd
+import igraph as ig
+import leidenalg
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+
+print("[1/5] 加载明细与社区归属")
+t0 = time.time()
+d = pd.read_csv(os.path.join(DATA, "26.08.27_detail.csv"), dtype=str, encoding="utf-8")
+d["create_time"] = pd.to_datetime(d["create_time"], errors="coerce", format="mixed")
+d["order_amount"] = pd.to_numeric(d["order_amount"], errors="coerce")
+d = d[d["create_time"].notna()].sort_values(["device_id", "create_time"])
+d["flight_nums"] = d["flight_nums"].apply(lambda s: ast.literal_eval(s) if isinstance(s, str) and s.startswith("[") else [])
+print(f"  {d['device_id'].nunique()} 设备 / {len(d)} 单, 耗时 {time.time()-t0:.1f}s")
+
+full = pd.read_csv(os.path.join(OUT, "final_merged_output.csv"), dtype=str,
+                   usecols=["device_id", "community_id"])
+full["community_id"] = pd.to_numeric(full["community_id"], errors="coerce")
+dev2comm = dict(zip(full["device_id"], full["community_id"]))
+##MD##
+## 2. 设备指纹构建
+
+每台设备三个集合：航线 bigram / 金额档 / 航班号（与 09 跃迁检测同口径）。
+##CODE##
+print("[2/5] 设备指纹构建")
+t0 = time.time()
+fp = {}
+for dev, g in d.groupby("device_id"):
+    routes = list(g["dep_city"].astype(str) + ">" + g["arr_city"].astype(str))
+    # 指纹元素：航线一元+二元（小设备靠一元保底，大设备靠二元精判）
+    bigrams = (set(routes) | set(zip(routes[:-1], routes[1:]))) if routes else set()
+    amt = set((g["order_amount"].dropna() / 50).round().astype(int))
+    flights = set()
+    for fl in g["flight_nums"]:
+        flights.update(fl)
+    # [TUNABLE] 有效指纹门槛：>=4 个元素
+    if len(bigrams) + len(amt) + len(flights) >= 4:
+        fp[dev] = {"bg": bigrams, "amt": amt, "fl": flights}
+devs = list(fp.keys())
+print(f"  有效指纹设备: {len(devs)} / {d['device_id'].nunique()}, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 3. MinHash + LSH 候选对生成
+
+把三集合拼接成一个"指纹元素集合"，MinHash 128 位签名，
+LSH 分桶（band=16, r=8）找 Jaccard 候选对——O(n) 近似替代 O(n²) 全比对。
+##CODE##
+print("[3/5] MinHash+LSH 候选对")
+t0 = time.time()
+rng = np.random.RandomState(42)
+N_HASH = 128
+# hash 函数参数 (a*x + b) mod p
+P = (1 << 61) - 1
+A = rng.randint(1, P, N_HASH, dtype=np.int64)
+B = rng.randint(0, P, N_HASH, dtype=np.int64)
+
+def minhash_sig(elements):
+    sig = np.full(N_HASH, P, dtype=np.int64)
+    for e in elements:
+        h = (A * hash(e) + B) % P
+        sig = np.minimum(sig, h)
+    return sig
+
+sigs = {}
+for dev in devs:
+    union = fp[dev]["bg"] | {("AMT", a) for a in fp[dev]["amt"]} | {("FLT", f) for f in fp[dev]["fl"]}
+    if union:
+        sigs[dev] = minhash_sig(union)
+print(f"  签名完成: {len(sigs)}, 耗时 {time.time()-t0:.1f}s")
+
+# LSH: band=32, r=4（高召回；指纹集合小，需靠精确过滤把关）
+t0 = time.time()
+BANDS, ROWS = 32, 4
+buckets = defaultdict(list)
+for dev, sig in sigs.items():
+    for b in range(BANDS):
+        key = (b, sig[b*ROWS:(b+1)*ROWS].tobytes())
+        buckets[key].append(dev)
+cand = set()
+for key, members in buckets.items():
+    if len(members) > 1 and len(members) < 200:  # [TUNABLE] 大桶跳过（公共模式）
+        members = sorted(members)
+        for i in range(len(members)):
+            for j in range(i+1, len(members)):
+                cand.add((members[i], members[j]))
+print(f"  LSH 候选对: {len(cand)}, 耗时 {time.time()-t0:.1f}s")
+##MD##
+## 4. 精确 Jaccard 过滤 + 指纹团伙聚类
+
+候选对算精确相似度（航线 0.4 + 金额 0.2 + 航班 0.4 加权），
+阈值过滤后建图，连通分量 = 指纹团伙。
+##CODE##
+print("[4/5] 精确相似度与聚类")
+t0 = time.time()
+def jac(a, b):
+    if not a and not b: return 0.0
+    u = a | b
+    return len(a & b) / len(u) if u else 0.0
+
+# [TUNABLE] 指纹团伙阈值
+TH_FP = 0.30
+edges, weights = [], []
+for a, b in cand:
+    fa, fb = fp[a], fp[b]
+    sim = jac(fa["bg"], fb["bg"]) * 0.4 + jac(fa["amt"], fb["amt"]) * 0.2 + jac(fa["fl"], fb["fl"]) * 0.4
+    if sim >= TH_FP:
+        edges.append((a, b))
+        weights.append(sim)
+print(f"  相似边(>= {TH_FP}): {len(edges)}, 耗时 {time.time()-t0:.1f}s")
+
+# 连通分量（设备节点）
+dev_list = sorted(set([x for e in edges for x in e]))
+idx = {x: i for i, x in enumerate(dev_list)}
+G = ig.Graph(n=len(dev_list), edges=[(idx[a], idx[b]) for a, b in edges], directed=False)
+G.es["weight"] = weights
+comps = G.connected_components()
+groups = defaultdict(list)
+for i, m in enumerate(comps.membership):
+    groups[m].append(dev_list[i])
+fp_gangs = {g: devs_ for g, devs_ in groups.items() if len(devs_) >= 3}
+print(f"  指纹团伙(>=3台): {len(fp_gangs)} 个, 最大 {max((len(v) for v in fp_gangs.values()), default=0)} 台")
+##MD##
+## 5. 跨社区标记与输出
+
+核心产出：指纹团伙中设备分属**多个不同实体社区** = 换马甲团伙嫌疑。
+##CODE##
+print("[5/5] 跨社区标记与输出")
+t0 = time.time()
+rows = []
+for gid, members in sorted(fp_gangs.items(), key=lambda x: -len(x[1])):
+    comms = [dev2comm.get(m) for m in members if pd.notna(dev2comm.get(m, None))]
+    comm_set = set(int(c) for c in comms if c != -1)
+    # 订单量合计（团伙作业规模）
+    n_orders = len(d[d["device_id"].isin(members)])
+    rows.append({
+        "fp_gang_id": f"F{gid}",
+        "device_cnt": len(members),
+        "order_cnt": n_orders,
+        "entity_comms": "|".join(str(c) for c in sorted(comm_set)),
+        "comm_cnt": len(comm_set),
+        # ★跨社区指纹团伙：>=2 个实体社区的设备行为指纹一致
+        "is_cross_community": int(len(comm_set) >= 2),
+        "devices": "|".join(members[:50]),
+    })
+fg = pd.DataFrame(rows).sort_values(["is_cross_community", "device_cnt"], ascending=False)
+fg.to_csv(os.path.join(OUT, "fingerprint_gangs.csv"), index=False, encoding="utf-8-sig")
+
+n_cross = int(fg["is_cross_community"].sum())
+print(f"  指纹团伙: {len(fg)} 个, 其中跨社区（换马甲嫌疑）: {n_cross} 个")
+print(f"\n  Top 跨社区指纹团伙:")
+for _, r in fg[fg["is_cross_community"] == 1].head(8).iterrows():
+    print(f"    {r['fp_gang_id']}: {r['device_cnt']}台/{r['order_cnt']}单, 跨 {r['comm_cnt']} 个社区 [{r['entity_comms'][:50]}]")
+print(f"\n  输出: fingerprint_gangs.csv, 耗时 {time.time()-t0:.1f}s")
