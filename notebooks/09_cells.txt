@@ -2,7 +2,7 @@
 # 09 团伙行为跃迁识别（⑥演化检测：T-180d~T-90d → T-90d~T0）
 
 **两周期对比**：
-- 上周期：26.08.27_180to90_base/detial.csv（T-180d~T-90d）
+- 上周期：26.05.29_base/detail.csv（T-180d~T-90d，上周期当时中高危名单 18,034 台口径）
 - 本周期：26.08.27_base/detail.csv（T-90d~T0，现有全量管线产出）
 
 **方法**：
@@ -52,7 +52,7 @@ def load_entities(path):
 print("[1/6] 加载两周期明细")
 t0 = time.time()
 cur_det, cur_ent = load_entities(os.path.join(DATA, "26.08.27_detail.csv"))
-prev_det, prev_ent = load_entities(os.path.join(DATA, "26.08.27_180to90_detial.csv"))
+prev_det, prev_ent = load_entities(os.path.join(DATA, "26.05.29_detail.csv"))
 print(f"  本周期: {cur_det['device_id'].nunique()} 设备 / {len(cur_det)} 单")
 print(f"  上周期: {prev_det['device_id'].nunique()} 设备 / {len(prev_det)} 单")
 # 设备直接存活

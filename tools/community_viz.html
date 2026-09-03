@@ -177,6 +177,7 @@ svg.graph:active{cursor:grabbing}
 <div style="overflow:auto;max-height:400px;border:1px solid #eee;border-radius:8px;background:#fff">
 <table class="data-table" style="font-size:12px"><thead><tr id="transHead"></tr></thead><tbody id="transTbody"></tbody></table>
 </div>
+<div id="transDeviceDrill" style="margin-top:14px;display:none"></div>
 <div id="transDetail" style="margin-top:14px;display:none">
 <h4 style="font-size:14px;color:#4E79A7;margin-bottom:6px" id="transDetailTitle"></h4>
 <div style="display:flex;gap:14px;flex-wrap:wrap">
@@ -1179,18 +1180,51 @@ async function loadTransitionDetail(prevG,curG){
   document.getElementById("transPrevTitle").textContent='上周期团伙 '+prevG+' 设备（'+(d.prev_devices||[]).length+' 台）';
   document.getElementById("transCurTitle").textContent='本周期团伙 '+curG+' 设备（'+(d.cur_devices||[]).length+' 台）';
   document.getElementById("transPrevTbody").innerHTML=(d.prev_devices||[]).map(v=>
-    '<tr><td style="font-family:monospace">'+esc(v.device_id)+'</td>'
+    '<tr style="cursor:pointer" onclick="loadTransDeviceDrill(\''+esc(v.device_id)+'\',\'prev\')" title="点击查看该设备上周期订单明细">'
+    +'<td style="font-family:monospace">'+esc(v.device_id)+'</td>'
     +'<td style="color:'+(v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999')+'">'+esc(v.risk_level)+'</td>'
     +'<td>'+v.order_cnt+'</td><td>'+v.refund_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td>'
     +'<td>'+(v.still_in_cur?'<span style="color:#59A14F">存活</span>':'<span style="color:#E15759;font-weight:700">已消失</span>')+'</td></tr>'
   ).join("") || '<tr><td colspan="6" style="color:#999">无成员数据</td></tr>';
   document.getElementById("transDevTbody").innerHTML=(d.cur_devices||[]).map(v=>
-    '<tr><td style="font-family:monospace">'+esc(v.device_id)+'</td>'
+    '<tr style="cursor:pointer" onclick="loadTransDeviceDrill(\''+esc(v.device_id)+'\',\'cur\')" title="点击查看该设备本周期订单明细">'
+    +'<td style="font-family:monospace">'+esc(v.device_id)+'</td>'
     +'<td style="color:'+(v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999')+'">'+esc(v.risk_level)+'</td>'
     +'<td>'+v.order_cnt+'</td><td>'+v.refund_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td>'
     +'<td>'+(v.in_prev_gang?'<span style="color:#F28E2B">老成员</span>':'<span style="color:#4E79A7">新成员</span>')+'</td></tr>'
   ).join("") || '<tr><td colspan="6" style="color:#999">无数据</td></tr>';
   document.getElementById("transDetail").scrollIntoView({behavior:"smooth",block:"start"});
+}
+// 跃迁明细设备级下钻：P 设备查上周期 detail / C 设备查本周期 detail
+async function loadTransDeviceDrill(devId, period){
+  let el = document.getElementById("transDeviceDrill");
+  el.style.display = "block";
+  el.innerHTML = '<h4 style="font-size:14px;margin:0 0 8px;color:'+(period==='prev'?'#F28E2B':'#4E79A7')+'">'
+    +'设备 <span style="font-family:monospace">'+esc(devId)+'</span> '+(period==='prev'?'上周期（26.05.29）':'本周期（26.08.27）')+' 订单明细 <span style="font-size:12px;color:#999">加载中...</span></h4>';
+  const d = await api('/api/device_drilldown/'+encodeURIComponent(devId)+'/'+period);
+  if(d.error){el.innerHTML+='<div style="color:#F28E2B;font-size:13px">'+esc(d.error)+'</div>';return;}
+  let html = '<h4 style="font-size:14px;margin:0 0 8px;color:'+(period==='prev'?'#F28E2B':'#4E79A7')+'">'
+    +'设备 <span style="font-family:monospace">'+esc(devId)+'</span> '+(period==='prev'?'上周期':'本周期')+' 订单明细（'+d.total+' 单，展示前 100）</h4>'
+    +'<div style="overflow:auto;max-height:360px;border:1px solid #eee;border-radius:8px;background:#fff">'
+    +'<table class="data-table" style="font-size:11px"><thead><tr>'
+    +'<th>订单号</th><th>下单</th><th>支付</th><th>退款申请</th><th>状态</th><th>金额</th><th>退款</th><th>赔付</th><th>航线</th><th>IP</th><th>userId</th><th>支付索引</th><th>乘机人证件</th><th>手机</th>'
+    +'</tr></thead><tbody>';
+  for(const o of (d.orders||[])){
+    html += '<tr><td style="font-family:monospace">'+esc(o.order_no.slice(-12))+'</td>'
+      +'<td>'+o.create_time.slice(5,16)+'</td><td>'+o.pay_time.slice(11,16)+'</td>'
+      +'<td style="color:'+(o.refund_apply_time?'#E15759':'#999')+'">'+(o.refund_apply_time?o.refund_apply_time.slice(5,16):'-')+'</td>'
+      +'<td>'+esc(o.status)+'</td><td>'+o.order_amount+'</td>'
+      +'<td style="color:#E15759">'+(o.refund_amount||'')+'</td>'
+      +'<td style="color:#E15759">'+(o.comp_amount||'')+'</td>'
+      +'<td>'+esc(o.route)+'</td><td style="font-family:monospace;font-size:10px">'+esc((o.ip||'').slice(0,16))+'</td>'
+      +'<td style="font-family:monospace;font-size:10px">'+esc(o.user_id)+'</td>'
+      +'<td style="font-family:monospace;font-size:10px">'+esc((o.pay_tool_id||'').slice(0,14))+'</td>'
+      +'<td style="font-family:monospace;font-size:10px">'+esc((o.card_nums||[]).join(' / ').slice(0,24))+'</td>'
+      +'<td style="font-family:monospace;font-size:10px">'+esc((o.mobiles||[]).join(' / ').slice(0,20))+'</td></tr>';
+  }
+  html += '</tbody></table></div>';
+  el.innerHTML = html;
+  el.scrollIntoView({behavior:"smooth",block:"start"});
 }
 document.querySelector('[data-tab="transition"]').addEventListener("click",()=>{loadTransitions();});
 window.addEventListener("resize",()=>{if(rgFlowData)drawRouteFlows();});

@@ -69,6 +69,8 @@ class GraphEngine:
         # 团伙跃迁表（09）
         self.gang_trans_df = None
         self.escape_df = None
+        # 上周期明细（26.05.29_detail.csv，跃迁下钻用）
+        self.prev_detail_df = None
         self._loaded = False
 
     def _load_detail(self):
@@ -81,6 +83,7 @@ class GraphEngine:
         _cands = [os.path.basename(p) for p in _glob.glob(os.path.join(_data_dir, "*_detail.csv"))]
         _dated = [(m.group(1), f) for f in _cands if (m := _re.match(r"^(\d{2}\.\d{2}\.\d{2})_", f))]
         detail_path = os.path.join(_data_dir, sorted(_dated)[-1][1]) if _dated else os.path.join(_data_dir, "26.08.27_detail.csv")
+        self.detail_path = detail_path  # 记录本周期 detail 路径（_load_prev_detail 判别上周期用）
         if not os.path.exists(detail_path):
             return None
         d = pd.read_csv(detail_path, dtype=str, encoding="utf-8",
@@ -580,6 +583,81 @@ class GraphEngine:
             "flight_uid_distinct_card_num_cnt": int(row.get("flight_uid_distinct_card_num_cnt", 0)) if not pd.isna(row.get("flight_uid_distinct_card_num_cnt")) else 0,
         }
 
+
+    def _load_prev_detail(self):
+        """懒加载上周期明细（26.05.29_detail.csv，存在说明跨周期数据齐）"""
+        if self.prev_detail_df is not None:
+            return self.prev_detail_df
+        import glob as _glob, re as _re
+        _data_dir = os.path.dirname(self.out_dir)
+        # 上周期 detail：优先 26.05.29_detail.csv（与 base 同日期前缀）
+        cands = []
+        for p in _glob.glob(os.path.join(_data_dir, "*_detail.csv")):
+            m = _re.match(r"^(\d{2}\.\d{2}\.\d{2})_", os.path.basename(p))
+            if m:
+                cands.append((m.group(1), p))
+        # 本周期 detail 日期（server 主数据源用的那个）
+        cur_d = None
+        if self._load_detail() is not None:
+            for p in _glob.glob(os.path.join(_data_dir, "*_detail.csv")):
+                m = _re.match(r"^(\d{2}\.\d{2}\.\d{2})_", os.path.basename(p))
+                if m and os.path.basename(p) == os.path.basename(self.detail_path):
+                    cur_d = m.group(1)
+        # 上周期 = 日期早于本周期的最大日期
+        prev_cands = [(d, p) for d, p in cands if cur_d is None or d < cur_d]
+        if not prev_cands:
+            return None
+        prev_path = sorted(prev_cands)[-1][1]
+        d = pd.read_csv(prev_path, dtype=str, encoding="utf-8")
+        for c in ["create_time", "pay_time", "refund_apply_time"]:
+            if c in d.columns:
+                d[c] = pd.to_datetime(d[c], errors="coerce", format="mixed")
+        for c in ["order_amount", "refund_amount", "total_amount"]:
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors="coerce")
+        self.prev_detail_df = d
+        return d
+
+    def get_device_drilldown(self, device_id, period="cur"):
+        """设备级订单下钻（跃迁明细用）。period: cur=本周期 / prev=上周期"""
+        if period == "prev":
+            d = self._load_prev_detail()
+            if d is None:
+                return {"error": "上周期 detail 未找到（需 26.05.29_detail.csv）"}
+        else:
+            d = self._load_detail()
+            if d is None:
+                return {"error": "detail not found"}
+        dd = d[d["device_id"] == device_id]
+        if dd.empty:
+            return {"device_id": device_id, "period": period, "orders": [], "total": 0}
+        import ast as _ast
+        def _arr(s):
+            try:
+                v = _ast.literal_eval(s) if isinstance(s, str) and s.startswith("[") else []
+                return [x for x in v if x][:5]
+            except Exception:
+                return []
+        orders = []
+        for _, r in dd.head(100).iterrows():
+            comp_v = r.get("total_amount") if pd.notna(r.get("total_amount")) else r.get("compensation_amount")
+            orders.append({
+                "order_no": str(r.get("order_no", "")),
+                "create_time": str(r.get("create_time", ""))[:19],
+                "pay_time": str(r.get("pay_time", ""))[:19],
+                "refund_apply_time": str(r.get("refund_apply_time", ""))[:19] if pd.notna(r.get("refund_apply_time")) else "",
+                "status": str(r.get("status", "")),
+                "order_amount": float(r.get("order_amount") or 0) if pd.notna(r.get("order_amount")) else 0,
+                "refund_amount": float(r.get("refund_amount") or 0) if pd.notna(r.get("refund_amount")) else 0,
+                "comp_amount": round(float(comp_v), 2) if comp_v is not None and pd.notna(comp_v) else 0,
+                "ip": str(r.get("ip", "")),
+                "route": str(r.get("dep_city", "")) + "→" + str(r.get("arr_city", "")),
+                "pay_tool_id": str(r.get("pay_tool_id", "")) if pd.notna(r.get("pay_tool_id")) else "",
+                "user_id": str(r.get("user_id", "")),
+                "card_nums": _arr(r.get("card_nums")),
+                "mobiles": _arr(r.get("mobiles")),
+            })
+        return {"device_id": device_id, "period": period, "total": len(dd), "orders": orders}
 
     def _load_gang_transition(self):
         """懒加载团伙跃迁表（gang_transition.csv / device_escape.csv）"""
@@ -1211,6 +1289,11 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/gang_transition_detail/"):
             parts = path.split("/")
             self._send_json(engine.get_gang_transition_detail(parts[-2], parts[-1]))
+        elif path.startswith("/api/device_drilldown/"):
+            parts = path.split("/")
+            dev = parts[-2] if parts[-1] in ("cur", "prev") else parts[-1]
+            period = parts[-1] if parts[-1] in ("cur", "prev") else "cur"
+            self._send_json(engine.get_device_drilldown(dev, period))
         elif path == "/api/route_gangs":
             self._send_json(engine.get_route_gangs())
         elif path.startswith("/api/route_gang_flows/"):
