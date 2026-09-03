@@ -273,3 +273,37 @@ A: 在 02 notebook 的 FEATURE_COLS 中添加新字段，确保原始 CSV 包含
 2. 提交 git 前 -> README 版本表更新
 3. 跑完管线 -> 08 质检，FAIL 项确认后再发布
 4. 前端改动 -> 验证关键 JS 函数存活
+
+
+### 上周期 base 导出的 HAVING 收紧版（2026-09-03，v4.2）
+
+背景：上周期线上总量 120.6 万台 > 下载上限 100 万，需在线上先过滤普通设备且不漏高危。
+
+收紧原则（已用 26.05.29 已下载的 100 万样本实测验证）：
+- 两个过松条件修正：拦截>=1（命中 70.8 万，单次拦截多为误伤）改为 拦截>=2；取消率>50%（命中 54.6 万，低单量普通用户改签噪音）改为 取消率>50% 且 订单>=10
+- 增加组合强度：核心信号（赔付/黄牛/快退/多账号/多乘机人）任一命中，或 10 项信号任 2 项同时命中
+
+```sql
+having flight_total_order_cnt > 5
+and (
+    flight_comp_total_amount > 0
+    OR flight_min_refund_pay_interval_sec <= 3600
+    OR flight_distinct_user_id_cnt >= 2
+    OR flight_uid_distinct_card_num_cnt >= 5
+    OR flight_scalper_cnt >= 1
+    OR (
+        (IF(flight_intercept_cnt >= 2,1,0))
+        + (IF(flight_distinct_pay_tool_cnt >= 3,1,0))
+        + (IF(flight_night_order_cnt * 1.0 / flight_total_order_cnt >= 0.3,1,0))
+        + (IF(flight_refund_order_cnt * 1.0 / flight_total_order_cnt > 0.5,1,0))
+        + (IF(flight_cancel_order_cnt * 1.0 / flight_total_order_cnt > 0.5 AND flight_total_order_cnt >= 10,1,0))
+        + (IF(flight_comp_total_amount > 0,1,0))
+        + (IF(flight_min_refund_pay_interval_sec <= 3600,1,0))
+        + (IF(flight_distinct_user_id_cnt >= 2,1,0))
+        + (IF(flight_uid_distinct_card_num_cnt >= 5,1,0))
+        + (IF(flight_scalper_cnt >= 1,1,0))
+    ) >= 2
+)
+```
+
+实测效果：高风险召回 100%（1228/1228）、中高危召回 98.6%（58085/58919）、命中总量约 29.5 万（线上 120 万预估 35.4 万，低于 100 万下载上限）。
