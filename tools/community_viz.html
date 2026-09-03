@@ -77,6 +77,7 @@ svg.graph:active{cursor:grabbing}
 <div class="tab" data-tab="timeseries">时序分析</div>
 <div class="tab" data-tab="internalip" style="background:#E15759;color:#fff">内部IP</div>
 <div class="tab" data-tab="routegang">航线团伙</div>
+<div class="tab" data-tab="transition">团伙跃迁</div>
 </div>
 <!-- Tab 2: Community Graph -->
 <div class="panel" id="panel-graph">
@@ -159,6 +160,27 @@ svg.graph:active{cursor:grabbing}
 <th>设备ID</th><th>社区ID</th><th>风险等级</th><th>订单数</th><th>IP分组</th><th>首单时间</th><th>末单时间</th><th>退款单</th><th>金额</th>
 </tr></thead><tbody id="ipDevTbody"></tbody></table>
 </div>
+</div>
+</div>
+</div>
+<div class="panel" id="panel-transition">
+<div class="filter-bar">
+<select id="transKind" onchange="loadTransitions()">
+<option value="all">全部跃迁</option>
+<option value="换马甲（甩实体保习惯）">换马甲团伙（核心）</option>
+<option value="延续（同团伙存活）">延续团伙</option>
+<option value="转型（保实体换业务）">转型团伙</option>
+<option value="escape">逃离检测</option>
+</select>
+<span style="font-size:12px;color:#666">两周期对比（T-180d~T-90d → T-90d~今）：实体重叠=换壳程度 / 指纹相似=行为习惯保留度 / 设备存活=直接延续</span>
+</div>
+<div style="overflow:auto;max-height:400px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr id="transHead"></tr></thead><tbody id="transTbody"></tbody></table>
+</div>
+<div id="transDetail" style="margin-top:14px;display:none">
+<h4 style="font-size:14px;color:#4E79A7;margin-bottom:6px" id="transDetailTitle"></h4>
+<div style="overflow:auto;max-height:380px;border:1px solid #eee;border-radius:8px;background:#fff">
+<table class="data-table" style="font-size:12px"><thead><tr><th>device_id</th><th>风险等级</th><th>订单数</th><th>赔付金额</th></tr></thead><tbody id="transDevTbody"></tbody></table>
 </div>
 </div>
 </div>
@@ -657,7 +679,7 @@ function searchCommunity() {
 }
 
 // High-risk community analysis
-let analysisPage=1,analysisTotal=0;
+let analysisPage=1,analysisTotal=0,analysisServerTotal=0;
 const analysisSize=20;
 let analysisDetailPage=1,analysisDetailTotal=0;
 const analysisDetailSize=50;
@@ -713,6 +735,13 @@ async function loadAnalysis(){
     rows=_analysisDeepRows;
   }else{
     analysisTotal=rows.length;
+    // 无筛选时翻页上限用 server 全量 total（22194），而非快照行数（2000）——
+    // 修复：输入 110 页被钳到 100 的 bug
+    if(noFilter && d.total && d.total > analysisTotal){
+      analysisServerTotal = d.total;
+    } else {
+      analysisServerTotal = analysisTotal;
+    }
     window._analysisRows=rows;
     rows=rows.slice((analysisPage-1)*analysisSize, analysisPage*analysisSize);
   }
@@ -751,13 +780,13 @@ async function loadAnalysis(){
       +'</tr>';
   }).join("");
   document.getElementById("analysisPageInfo").textContent='共 '+analysisTotal+' 个社区';
-  document.getElementById("analysisPageNum").textContent='第 '+analysisPage+' 页 / 共 '+Math.ceil(analysisTotal/analysisSize)+' 页';
+  document.getElementById("analysisPageNum").textContent='第 '+analysisPage+' 页 / 共 '+Math.ceil(Math.max(analysisTotal,analysisServerTotal||0)/analysisSize)+' 页';
   document.getElementById("analysisPrev").disabled=analysisPage<=1;
-  document.getElementById("analysisNext").disabled=analysisPage>=Math.ceil(analysisTotal/analysisSize);
+  document.getElementById("analysisNext").disabled=analysisPage>=Math.ceil(Math.max(analysisTotal,analysisServerTotal||0)/analysisSize);
 }
 
 function changeAnalysisPage(d){analysisPage=Math.max(1,analysisPage+d);loadAnalysis();}
-function jumpAnalysisPage(){const v=parseInt(document.getElementById("analysisJumpInput").value)||1;const maxP=Math.ceil(analysisTotal/analysisSize);analysisPage=Math.min(Math.max(1,v),maxP);loadAnalysis();}
+function jumpAnalysisPage(){const v=parseInt(document.getElementById("analysisJumpInput").value)||1;const maxP=Math.ceil(Math.max(analysisTotal,analysisServerTotal||0)/analysisSize);analysisPage=Math.min(Math.max(1,v),maxP);loadAnalysis();}
 // 深翻页: 页码超出本地快照(2000条/100页)时向 server 请求该页——数据注入全局 _analysisDeepRows
 let _analysisDeepRows=null;
 async function loadAnalysisDeepPage(){
@@ -1105,6 +1134,45 @@ function drawRouteFlows(){
   svg.innerHTML = html;
 }
 document.querySelector('[data-tab="routegang"]').addEventListener("click",()=>{loadRouteGangs();});
+
+// ===================== 团伙跃迁（⑥演化检测）=====================
+async function loadTransitions(){
+  const kind=document.getElementById("transKind").value;
+  const d=await api('/api/gang_transitions?kind='+encodeURIComponent(kind));
+  if(d.error){document.getElementById("transTbody").innerHTML='<tr><td colspan="9" style="color:#F28E2B">'+esc(d.error)+'——请先跑 09_gang_transition notebook</td></tr>';return;}
+  document.getElementById("transHead").innerHTML = kind==='escape'
+    ? '<th>上周期团伙</th><th>团伙规模</th><th>消失设备</th><th>逃离率</th><th>实体是否存活</th>'
+    : '<th>上周期团伙</th><th>本周期团伙</th><th>上周期台数</th><th>本周期台数</th><th>设备存活</th><th>实体重叠</th><th>指纹相似</th><th>形态</th>';
+  document.getElementById("transTbody").innerHTML = (d.items||[]).map(it=>{
+    if(kind==='escape'){
+      return '<tr><td><b>'+esc(it.prev_gang)+'</b></td><td>'+it.gang_size+'</td><td style="color:#E15759">'+it.escaped_devs+'</td>'
+        +'<td>'+(it.escape_ratio*100).toFixed(0)+'%</td>'
+        +'<td>'+(it.entities_still_alive==='True'?'<span style="color:#F28E2B">实体仍活跃(疑似换设备)</span>':'<span style="color:#E15759;font-weight:700">实体全消(疑似封号/跑路)</span>')+'</td></tr>';
+    }
+    const tc={'换马甲（甩实体保习惯）':'#E15759','延续（同团伙存活）':'#59A14F','转型（保实体换业务）':'#F28E2B','弱关联':'#BAB0AC'}[it.transition]||'#333';
+    return '<tr style="cursor:pointer" onclick="loadTransitionDetail(\''+esc(it.prev_gang)+'\',\''+esc(it.cur_gang)+'\')">'
+      +'<td><b>'+esc(it.prev_gang)+'</b></td><td><b>'+esc(it.cur_gang)+'</b></td>'
+      +'<td>'+it.prev_devs+'</td><td>'+it.cur_devs+'</td>'
+      +'<td>'+(it.dev_survive_ratio*100).toFixed(0)+'%</td>'
+      +'<td>'+it.entity_jaccard.toFixed(3)+'</td>'
+      +'<td style="font-weight:700;color:'+(it.fp_similarity>=0.25?'#E15759':'#333')+'">'+it.fp_similarity.toFixed(3)+'</td>'
+      +'<td style="color:'+tc+';font-weight:600">'+esc(it.transition)+'</td></tr>';
+  }).join("") || '<tr><td colspan="9" style="color:#999">无数据</td></tr>';
+}
+async function loadTransitionDetail(prevG,curG){
+  const d=await api('/api/gang_transition_detail/'+encodeURIComponent(prevG)+'/'+encodeURIComponent(curG));
+  if(d.error){return;}
+  document.getElementById("transDetail").style.display="block";
+  document.getElementById("transDetailTitle").innerHTML='跃迁对 '+esc(prevG)+' → '+esc(curG)
+    +'（实体重叠 '+d.entity_jaccard.toFixed(3)+' / 指纹 '+d.fp_similarity.toFixed(3)+' / 设备存活 '+(d.dev_survive_ratio*100).toFixed(0)+'% / '+esc(d.transition)+'）本周期设备:';
+  document.getElementById("transDevTbody").innerHTML=(d.cur_devices||[]).map(v=>
+    '<tr><td style="font-family:monospace">'+esc(v.device_id)+'</td>'
+    +'<td style="color:'+(v.risk_level==='高风险'?'#E15759':v.risk_level==='中风险'?'#F28E2B':'#999')+'">'+esc(v.risk_level)+'</td>'
+    +'<td>'+v.order_cnt+'</td><td style="color:#E15759">'+v.comp_amount+'</td></tr>'
+  ).join("");
+  document.getElementById("transDetail").scrollIntoView({behavior:"smooth",block:"start"});
+}
+document.querySelector('[data-tab="transition"]').addEventListener("click",()=>{loadTransitions();});
 window.addEventListener("resize",()=>{if(rgFlowData)drawRouteFlows();});
 // Auto-load metrics on first tab switch
 </script>

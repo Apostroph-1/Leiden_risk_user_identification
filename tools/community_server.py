@@ -66,6 +66,9 @@ class GraphEngine:
         # 设备特征标签表（06/机器行为）
         self.dev_feat_v2_df = None
         self.machine_df2 = None
+        # 团伙跃迁表（09）
+        self.gang_trans_df = None
+        self.escape_df = None
         self._loaded = False
 
     def _load_detail(self):
@@ -578,6 +581,63 @@ class GraphEngine:
         }
 
 
+    def _load_gang_transition(self):
+        """懒加载团伙跃迁表（gang_transition.csv / device_escape.csv）"""
+        if self.gang_trans_df is not None:
+            return self.gang_trans_df, self.escape_df
+        tpath = os.path.join(self.out_dir, "gang_transition.csv")
+        epath = os.path.join(self.out_dir, "device_escape.csv")
+        if os.path.exists(tpath):
+            t = pd.read_csv(tpath, dtype=str, encoding="utf-8-sig")
+            for c in ["prev_devs", "cur_devs", "dev_survive"]:
+                t[c] = pd.to_numeric(t[c], errors="coerce").fillna(0).astype(int)
+            for c in ["dev_survive_ratio", "entity_jaccard", "fp_similarity"]:
+                t[c] = pd.to_numeric(t[c], errors="coerce").fillna(0)
+        else:
+            t = pd.DataFrame()
+        # 空文件容错（逃离表可能无内容）
+        try:
+            e = pd.read_csv(epath, dtype=str, encoding="utf-8-sig") if os.path.exists(epath) else pd.DataFrame()
+        except pd.errors.EmptyDataError:
+            e = pd.DataFrame()
+        self.gang_trans_df, self.escape_df = t, e
+        return t, e
+
+    def get_gang_transitions(self, kind="all"):
+        """团伙跃迁列表。kind: all/形态名/escape（逃离）"""
+        t, e = self._load_gang_transition()
+        if kind == "escape":
+            rows = e.to_dict(orient="records") if len(e) else []
+            return {"total": len(rows), "items": rows}
+        if len(t) == 0:
+            return {"error": "gang_transition.csv not found"}
+        t2 = t if kind == "all" else t[t["transition"] == kind]
+        items = t2.to_dict(orient="records")
+        return {"total": len(items), "items": items}
+
+    def get_gang_transition_detail(self, prev_gang, cur_gang):
+        """跃迁对明细：本周期团伙设备下钻"""
+        t, _ = self._load_gang_transition()
+        row = t[(t["prev_gang"] == prev_gang) & (t["cur_gang"] == cur_gang)]
+        if row.empty:
+            return {"error": "transition not found"}
+        r = row.iloc[0]
+        cid = int(str(cur_gang).replace("C", ""))
+        devs = self.merged_df[self.merged_df["community_id"] == cid]
+        dev_rows = []
+        for _, d in devs.iterrows():
+            dev_rows.append({
+                "device_id": d["device_id"], "risk_level": d.get("risk_level", "-"),
+                "order_cnt": int(d.get("flight_total_order_cnt", 0) or 0),
+                "comp_amount": float(d.get("flight_comp_total_amount", 0) or 0),
+            })
+        return {"prev_gang": prev_gang, "cur_gang": cur_gang,
+                "entity_jaccard": float(r["entity_jaccard"]),
+                "fp_similarity": float(r["fp_similarity"]),
+                "dev_survive_ratio": float(r["dev_survive_ratio"]),
+                "transition": r["transition"],
+                "cur_devices": dev_rows}
+
     def _load_dev_feature_tags(self):
         """懒加载设备级特征标签（套利/档位/自动支付 + 机器行为），返回 device_id -> 标签列表"""
         if self.dev_feat_v2_df is not None:
@@ -1087,6 +1147,12 @@ class QueryHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/device_detail/"):
             device_id = unquote(path.split("/", 3)[-1])
             self._send_json(engine.get_device_detail(device_id))
+        elif path == "/api/gang_transitions":
+            kind = params.get("kind", ["all"])[0]
+            self._send_json(engine.get_gang_transitions(kind))
+        elif path.startswith("/api/gang_transition_detail/"):
+            parts = path.split("/")
+            self._send_json(engine.get_gang_transition_detail(parts[-2], parts[-1]))
         elif path == "/api/route_gangs":
             self._send_json(engine.get_route_gangs())
         elif path.startswith("/api/route_gang_flows/"):

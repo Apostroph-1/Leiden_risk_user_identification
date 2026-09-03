@@ -1,0 +1,244 @@
+##MD##
+# 09 团伙行为跃迁识别（⑥演化检测：T-180d~T-90d → T-90d~T0）
+
+**两周期对比**：
+- 上周期：26.08.27_180to90_base/detial.csv（T-180d~T-90d）
+- 本周期：26.08.27_base/detail.csv（T-90d~T0，现有全量管线产出）
+
+**方法**：
+1. 两周期各跑 Leiden 实体图 → 团伙级实体集合（IP/证件/手机/userId）
+2. 跨周期团伙对齐：实体 Jaccard 重叠度（换壳程度）+ 设备直接存活
+3. **行为指纹相似度**（⑤）：航线 N-Gram + 金额档位 N-Gram + 航班号指纹
+4. 四形态判定：延续 / 换马甲（实体甩掉但指纹保留）/ 转型 / 无关
+5. 逃离检测：上周期高危设备本周期消失
+
+**输出**: gang_transition.csv（跃迁对）+ device_escape.csv（逃离设备）
+##CODE##
+import os, time, ast
+from collections import defaultdict
+import numpy as np
+import pandas as pd
+
+BASE = os.environ.get("LEIDEN_BASE", os.path.abspath(os.path.join(os.getcwd(), "..")))
+DATA = os.path.join(BASE, "data")
+OUT  = os.path.join(BASE, "data", "model_output")
+
+def load_detail(path):
+    d = pd.read_csv(path, dtype=str, encoding="utf-8")
+    for c in ["create_time", "pay_time", "refund_apply_time"]:
+        d[c] = pd.to_datetime(d[c], errors="coerce", format="mixed")
+    for c in ["order_amount", "refund_amount"]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d[d["create_time"].notna()].sort_values(["device_id", "create_time"])
+    for col in ["card_nums", "mobiles", "flight_nums"]:
+        if col in d.columns:
+            d[col] = d[col].apply(lambda s: ast.literal_eval(s) if isinstance(s, str) and s.startswith("[") else [])
+    return d
+
+def load_entities(path):
+    """设备 -> 实体集合（IP/证件/手机/userId）"""
+    d = load_detail(path)
+    ent = defaultdict(set)
+    for _, r in d.iterrows():
+        dev = r["device_id"]
+        if pd.notna(r.get("ip")): ent[dev].add("ip:" + str(r["ip"]))
+        for c in r.get("card_nums") or []: ent[dev].add("card:" + c)
+        for m in r.get("mobiles") or []: ent[dev].add("mob:" + m)
+        if pd.notna(r.get("user_id")) and str(r["user_id"]).strip(): ent[dev].add("uid:" + str(r["user_id"]))
+    return d, ent
+##MD##
+## 1. 加载两周期数据
+##CODE##
+print("[1/6] 加载两周期明细")
+t0 = time.time()
+cur_det, cur_ent = load_entities(os.path.join(DATA, "26.08.27_detail.csv"))
+prev_det, prev_ent = load_entities(os.path.join(DATA, "26.08.27_180to90_detial.csv"))
+print(f"  本周期: {cur_det['device_id'].nunique()} 设备 / {len(cur_det)} 单")
+print(f"  上周期: {prev_det['device_id'].nunique()} 设备 / {len(prev_det)} 单")
+# 设备直接存活
+dev_cur, dev_prev = set(cur_ent), set(prev_ent)
+print(f"  设备直接存活: {len(dev_cur & dev_prev)} 台（{len(dev_cur & dev_prev)/max(len(dev_prev),1)*100:.1f}% 上周期设备延续）")
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 2. 上周期团伙构建（设备共实体连边，连通分量）
+
+上周期没有社区产出（只有 base/detial），用简易团伙发现：
+共享 >=2 个实体的设备连边 -> 连通分量 = 团伙（>=3 台）。
+##CODE##
+print("[2/6] 上周期团伙构建（共实体连通分量）")
+t0 = time.time()
+
+# 实体 -> 设备倒排
+ent2devs = defaultdict(set)
+for dev, ents in prev_ent.items():
+    for e in ents:
+        ent2devs[e].add(dev)
+# 只看共享 >=2 实体的设备对（防弱关联）
+pair_cnt = defaultdict(int)
+for e, devs in ent2devs.items():
+    if len(devs) > 20:  # [TUNABLE] 热点实体（公共 IP 等）跳过
+        continue
+    dl = sorted(devs)
+    for i in range(len(dl)):
+        for j in range(i+1, len(dl)):
+            pair_cnt[(dl[i], dl[j])] += 1
+print(f"  共享实体设备对: {len(pair_cnt)}, 其中 >=2 实体: {sum(1 for v in pair_cnt.values() if v>=2)}")
+
+# 并查集
+parent = {}
+def find(x):
+    while parent.get(x, x) != x:
+        parent[x] = parent.get(parent[x], parent[x]); x = parent[x]
+    return x
+def union(a, b):
+    ra, rb = find(a), find(b)
+    if ra != rb: parent[ra] = rb
+for (a, b), c in pair_cnt.items():
+    if c >= 2:
+        parent.setdefault(a, a); parent.setdefault(b, b)
+        union(a, b)
+comps = defaultdict(set)
+for dev in parent:
+    comps[find(dev)].add(dev)
+prev_gangs = {f"P{gid}": devs for gid, (root, devs) in enumerate(sorted(comps.items())) if len(devs) >= 3}
+print(f"  上周期团伙（>=3台）: {len(prev_gangs)} 个, 最大 {max((len(v) for v in prev_gangs.values()), default=0)} 台")
+print(f"  耗时 {time.time()-t0:.1f}s")
+##MD##
+## 3. 本周期团伙（用现有 Leiden 社区产出）
+##CODE##
+print("[3/6] 本周期团伙加载")
+full = pd.read_csv(os.path.join(OUT, "final_merged_output.csv"), dtype=str,
+                   usecols=["device_id", "community_id", "risk_level"])
+full["community_id"] = pd.to_numeric(full["community_id"], errors="coerce")
+sub = full[full["community_id"] != -1]
+cur_gangs = {}
+for cid, g in sub.groupby("community_id"):
+    if len(g) >= 3:
+        cur_gangs[f"C{int(cid)}"] = set(g["device_id"])
+print(f"  本周期团伙（>=3台）: {len(cur_gangs)} 个")
+##MD##
+## 4. 跨周期团伙对齐（实体重叠 + 设备存活 + 行为指纹）
+
+指纹：航线 N-Gram 二元组 Jaccard + 金额档 N-Gram Jaccard + 航班号集合 Jaccard（加权平均）。
+##CODE##
+print("[4/6] 跨周期团伙对齐与指纹相似度")
+t0 = time.time()
+
+def device_fingerprint(d, dev):
+    """设备行为指纹: (航线bigram集合, 金额档集合, 航班号集合)"""
+    g = d[d["device_id"] == dev]
+    routes = list(g["dep_city"].astype(str) + ">" + g["arr_city"].astype(str))
+    bigrams = set(zip(routes[:-1], routes[1:])) if len(routes) > 1 else {(r,) for r in routes}
+    amt_band = set((g["order_amount"].dropna() / 50).round().astype(int))
+    flights = set()
+    for fl in g["flight_nums"]:
+        flights.update(fl)
+    return bigrams, amt_band, flights
+
+def jaccard(a, b):
+    if not a and not b: return 0.0
+    return len(a & b) / len(a | b) if (a | b) else 0.0
+
+# 预计算全部设备指纹（两周期各一次）
+def build_fp_cache(d):
+    cache = {}
+    for dev, g in d.groupby("device_id"):
+        routes = list(g["dep_city"].astype(str) + ">" + g["arr_city"].astype(str))
+        bigrams = set(zip(routes[:-1], routes[1:])) if len(routes) > 1 else {(r,) for r in routes}
+        amt = set((g["order_amount"].dropna() / 50).round().astype(int))
+        flights = set()
+        for fl in g["flight_nums"]:
+            flights.update(fl)
+        cache[dev] = (bigrams, amt, flights)
+    return cache
+
+fp_prev = build_fp_cache(prev_det)
+fp_cur = build_fp_cache(cur_det)
+print(f"  指纹缓存: 上周期 {len(fp_prev)}, 本周期 {len(fp_cur)}, 耗时 {time.time()-t0:.1f}s")
+
+# 团伙级实体集合与指纹集合
+def gang_entities(gang_devs, ent_map):
+    s = set()
+    for d in gang_devs:
+        s |= ent_map.get(d, set())
+    return s
+
+def gang_fingerprint(gang_devs, fp_cache):
+    bg, amt, fl = set(), set(), set()
+    n = 0
+    for d in gang_devs:
+        if d in fp_cache:
+            b, a, f = fp_cache[d]
+            bg |= b; amt |= a; fl |= f; n += 1
+    return bg, amt, fl, n
+
+rows = []
+for pid, pdevs in prev_gangs.items():
+    pent = gang_entities(pdevs, prev_ent)
+    pbg, pamt, pfl, pn = gang_fingerprint(pdevs, fp_prev)
+    for cid, cdevs in cur_gangs.items():
+        cent = gang_entities(cdevs, cur_ent)
+        # 实体重叠（Jaccard，限集合大小防性能问题）
+        ent_j = jaccard(pent, cent) if len(pent) < 5000 and len(cent) < 5000 else 0.0
+        dev_overlap = len(pdevs & cdevs) / max(len(pdevs), 1)
+        # 指纹相似度（只对有实体重叠或设备存活的团伙对算，防 O(n^2) 全比对）
+        if ent_j < 0.02 and dev_overlap < 0.05:
+            continue
+        cbg, camt, cfl, cn = gang_fingerprint(cdevs, fp_cur)
+        fp_sim = (jaccard(pbg, cbg) * 0.4 + jaccard(pamt, camt) * 0.2 + jaccard(pfl, cfl) * 0.4)
+        rows.append({
+            "prev_gang": pid, "cur_gang": cid,
+            "prev_devs": len(pdevs), "cur_devs": len(cdevs),
+            "dev_survive": len(pdevs & cdevs), "dev_survive_ratio": round(dev_overlap, 3),
+            "entity_jaccard": round(ent_j, 3),
+            "fp_similarity": round(fp_sim, 3),
+        })
+trans = pd.DataFrame(rows)
+print(f"  候选跃迁对: {len(trans)}, 耗时 {time.time()-t0:.1f}s")
+trans.head(10)
+##MD##
+## 5. 四形态判定 + 逃离检测
+##CODE##
+print("[5/6] 四形态判定与逃离检测")
+# [TUNABLE] 形态阈值
+TH_ENT, TH_FP = 0.15, 0.25
+def classify(r):
+    hi_ent = r["entity_jaccard"] >= TH_ENT or r["dev_survive_ratio"] >= 0.3
+    hi_fp = r["fp_similarity"] >= TH_FP
+    if hi_ent and hi_fp: return "延续（同团伙存活）"
+    if not hi_ent and hi_fp: return "换马甲（甩实体保习惯）"   # ★核心产出
+    if hi_ent and not hi_fp: return "转型（保实体换业务）"
+    return "弱关联"
+trans["transition"] = trans.apply(classify, axis=1)
+print("  跃迁形态分布:")
+print(trans["transition"].value_counts().to_string())
+
+# 逃离检测：上周期团伙设备在本周期完全无订单且无实体关联
+cur_all_devs = set(cur_det["device_id"])
+cur_all_ents = set()
+for e in cur_ent.values(): cur_all_ents |= e
+escape_rows = []
+for pid, pdevs in prev_gangs.items():
+    gone = [d for d in pdevs if d not in cur_all_devs]
+    # 实体存活检查（设备没了但实体还在 = 换设备；实体也没了 = 真逃离）
+    ent_alive = any(prev_ent[d] & cur_all_ents for d in gone if d in prev_ent)
+    if gone:
+        escape_rows.append({"prev_gang": pid, "gang_size": len(pdevs),
+                            "escaped_devs": len(gone),
+                            "escape_ratio": round(len(gone)/len(pdevs), 3),
+                            "entities_still_alive": ent_alive})
+escape = pd.DataFrame(escape_rows)
+print(f"\n  逃离检测: {len(escape)} 个上周期团伙有设备消失, 其中实体也全消失(疑似封号/跑路): {(escape['entities_still_alive']==False).sum() if len(escape) else 0} 个")
+##MD##
+## 6. 输出
+##CODE##
+print("[6/6] 输出")
+trans = trans.sort_values(["fp_similarity", "entity_jaccard"], ascending=False)
+trans.to_csv(os.path.join(OUT, "gang_transition.csv"), index=False, encoding="utf-8-sig")
+escape.to_csv(os.path.join(OUT, "device_escape.csv"), index=False, encoding="utf-8-sig")
+print(f"  gang_transition.csv: {len(trans)} 对（换马甲 {(trans['transition']=='换马甲（甩实体保习惯）').sum()}）")
+print(f"  device_escape.csv: {len(escape)} 团伙")
+print("\n  Top 跃迁对:")
+for _, r in trans.head(10).iterrows():
+    print(f"    {r['prev_gang']}({r['prev_devs']}台) -> {r['cur_gang']}({r['cur_devs']}台): "
+          f"实体重叠 {r['entity_jaccard']}, 设备存活 {r['dev_survive_ratio']}, 指纹 {r['fp_similarity']} = {r['transition']}")
