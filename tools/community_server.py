@@ -630,7 +630,9 @@ class GraphEngine:
                 "device_id": d["device_id"], "risk_level": d.get("risk_level", "-"),
                 "order_cnt": int(d.get("flight_total_order_cnt", 0) or 0),
                 "refund_cnt": int(d.get("flight_refund_order_cnt", 0) or 0),
-                "comp_amount": float(d.get("flight_comp_total_amount", 0) or 0),
+                # NaN 防护：merged 表 comp 列 NaN 时 float(nan) 序列化非法 JSON（v4.3 修复）
+                "comp_amount": round(float(d["flight_comp_total_amount"]), 2)
+                    if pd.notna(d.get("flight_comp_total_amount")) else 0,
                 "in_prev_gang": 0,
             })
         # P 团伙成员（09 产出 prev_gang_members.csv）
@@ -656,12 +658,17 @@ class GraphEngine:
                 pr_map = {r_["device_id"]: r_ for _, r_ in pr.iterrows()}
             for dev in sorted(prev_dev_ids):
                 m = pr_map.get(dev)
+                # NaN 防护：上周期表指标列可能为 NaN/空串，float(nan) 序列化成非法 JSON，
+                # 浏览器 JSON.parse 直接抛错导致前端下钻静默失败（v4.3 修复）
+                _oc = m.get("flight_total_order_cnt") if m is not None else None
+                _rc = m.get("flight_refund_order_cnt") if m is not None else None
+                _ca = m.get("flight_comp_total_amount") if m is not None else None
                 prev_rows.append({
                     "device_id": dev,
                     "risk_level": m.get("risk_level", "-") if m is not None else "-",
-                    "order_cnt": int(float(m.get("flight_total_order_cnt", 0))) if m is not None else 0,
-                    "refund_cnt": int(float(m.get("flight_refund_order_cnt", 0))) if m is not None else 0,
-                    "comp_amount": float(m.get("flight_comp_total_amount", 0)) if m is not None else 0,
+                    "order_cnt": int(float(_oc)) if _oc is not None and pd.notna(_oc) and str(_oc).strip() != "" else 0,
+                    "refund_cnt": int(float(_rc)) if _rc is not None and pd.notna(_rc) and str(_rc).strip() != "" else 0,
+                    "comp_amount": round(float(_ca), 2) if _ca is not None and pd.notna(_ca) and str(_ca).strip() != "" else 0,
                     "still_in_cur": 1 if dev in cur_ids else 0,
                 })
         return {"prev_gang": prev_gang, "cur_gang": cur_gang,
